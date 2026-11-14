@@ -155,3 +155,113 @@ export function valueTone(skill: Skill, value: number | null): string {
   if (skill === 'attack') return value >= 0.3 ? 'text-success' : value < 0 ? 'text-danger' : 'text-white';
   return value >= 1.5 ? 'text-success' : value < 1 ? 'text-danger' : 'text-white';
 }
+
+// ---------- Live trends (quiet, no pop-ups) ----------
+export type TrendTone = 'alert' | 'warning' | 'info';
+export interface Trend { message: string; tone: TrendTone; group: string }
+
+const gradeValue = (g: Grade) => (g === 'plus' ? 2 : g === 'zero' ? 1 : 0);
+const pct = (v: number) => `${(v * 100).toFixed(0)}%`;
+
+function attackEff(list: StatEvent[]) {
+  if (list.length === 0) return null;
+  const k = list.filter(e => e.grade === 'plus').length;
+  const err = list.filter(e => e.grade === 'minus').length;
+  return (k - err) / list.length;
+}
+
+function passAvg(list: StatEvent[]) {
+  if (list.length === 0) return null;
+  return list.reduce((sum, e) => sum + gradeValue(e.grade), 0) / list.length;
+}
+
+export function detectTrends(state: GameState): Trend[] {
+  const trends: Trend[] = [];
+  const setNum = currentSetNumber(state);
+  const stats = state.events.filter((e): e is StatEvent => e.kind === 'stat');
+  const inSet = (s: number) => stats.filter(e => e.set === s);
+
+  state.players.forEach((p, idx) => {
+    const name = playerLabel(p, idx);
+    const mine = stats.filter(e => e.playerId === p.id);
+
+    // Passing: last 6 passes
+    const passes = mine.filter(e => e.skill === 'pass').slice(-6);
+    if (passes.length >= 4) {
+      const avg = passAvg(passes)!;
+      if (avg < 1) trends.push({ group: 'Passing', tone: 'warning', message: `${name} passing ${avg.toFixed(2)} avg over the last ${passes.length}. Under pressure.` });
+    }
+
+    // Serving: last 5 serves
+    const serves = mine.filter(e => e.skill === 'serve').slice(-5);
+    const serveErr = serves.filter(e => e.grade === 'minus').length;
+    if (serveErr >= 3) trends.push({ group: 'Serving', tone: 'warning', message: `${name}: ${serveErr} serve errors in the last ${serves.length}.` });
+
+    // Attack: hot over last 6, cold over the match
+    const attacks = mine.filter(e => e.skill === 'attack');
+    const recent = attacks.slice(-6);
+    const kills = recent.filter(e => e.grade === 'plus').length;
+    const errs = recent.filter(e => e.grade === 'minus').length;
+    if (kills >= 4 && errs === 0) {
+      trends.push({ group: 'Attack', tone: 'info', message: `${name} hot: ${kills} kills, 0 errors in the last ${recent.length}. Keep feeding.` });
+    } else if (attacks.length >= 5) {
+      const eff = attackEff(attacks)!;
+      if (eff <= -0.1) trends.push({ group: 'Attack', tone: 'warning', message: `${name} attack eff ${pct(eff)} on ${attacks.length} swings. Go elsewhere.` });
+    }
+  });
+
+  // Team serve errors this set
+  const setServeErr = inSet(setNum).filter(e => e.skill === 'serve' && e.grade === 'minus').length;
+  if (setServeErr >= 4) trends.push({ group: 'Serving', tone: 'warning', message: `Team gave away ${setServeErr} points on serve this set.` });
+
+  // Opponent buttons this set
+  const setPoints = state.events.filter(e => e.kind === 'point' && e.set === setNum);
+  const countReason = (r: string) => setPoints.filter(e => e.kind === 'point' && e.reason === r).length;
+  const oppAces = countReason('opp_ace');
+  const oppServeErr = countReason('opp_serve_error');
+  const oppKills = countReason('opp_attack_point');
+  if (oppAces >= 3) trends.push({ group: 'Opponent', tone: 'alert', message: `${oppAces} opponent aces this set. Serve receive is the problem.` });
+  if (oppServeErr >= 4) trends.push({ group: 'Opponent', tone: 'info', message: `Opponent gave you ${oppServeErr} service errors this set. Their serve is shaky.` });
+  if (oppKills >= 6) trends.push({ group: 'Opponent', tone: 'alert', message: `Opponent has ${oppKills} attack points this set. Check block and defense.` });
+
+  // Runs in the current set
+  const sequence: TeamSide[] = [];
+  state.events.forEach(e => {
+    if (e.set !== setNum) return;
+    if (e.kind === 'point') sequence.push(e.team);
+    if (e.kind === 'stat' && e.point) sequence.push(e.point);
+  });
+  if (sequence.length > 0) {
+    const last = sequence[sequence.length - 1];
+    let run = 0;
+    for (let i = sequence.length - 1; i >= 0 && sequence[i] === last; i--) run++;
+    if (run >= 4) {
+      trends.push(last === 'opponent'
+        ? { group: 'Runs', tone: 'alert', message: `Opponent on a ${run}-0 run. Timeout?` }
+        : { group: 'Runs', tone: 'info', message: `You're on a ${run}-0 run.` });
+    }
+  }
+
+  // Set vs previous set
+  if (setNum >= 2) {
+    const cur = inSet(setNum), prev = inSet(setNum - 1);
+    const curAtk = cur.filter(e => e.skill === 'attack'), prevAtk = prev.filter(e => e.skill === 'attack');
+    if (curAtk.length >= 5 && prevAtk.length >= 5) {
+      const a = attackEff(curAtk)!, b = attackEff(prevAtk)!;
+      if (Math.abs(a - b) >= 0.15) {
+        trends.push({ group: 'Set vs set', tone: a < b ? 'warning' : 'info', message: `Attack eff ${a < b ? 'down' : 'up'} from ${pct(b)} to ${pct(a)} vs set ${setNum - 1}.` });
+      }
+    }
+    const curPas = cur.filter(e => e.skill === 'pass'), prevPas = prev.filter(e => e.skill === 'pass');
+    if (curPas.length >= 5 && prevPas.length >= 5) {
+      const a = passAvg(curPas)!, b = passAvg(prevPas)!;
+      if (Math.abs(a - b) >= 0.3) {
+        trends.push({ group: 'Set vs set', tone: a < b ? 'warning' : 'info', message: `Team passing ${a < b ? 'down' : 'up'} from ${b.toFixed(2)} to ${a.toFixed(2)} vs set ${setNum - 1}.` });
+      }
+    }
+  }
+
+  // Most urgent first
+  const order: Record<TrendTone, number> = { alert: 0, warning: 1, info: 2 };
+  return trends.sort((x, y) => order[x.tone] - order[y.tone]);
+}

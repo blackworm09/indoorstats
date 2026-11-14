@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, BarChart3, Settings, XCircle, Trophy, Plus, Trash2, Minus } from 'lucide-react';
+import { Activity, BarChart3, Settings, XCircle, Trophy, Plus, Trash2, Minus, Zap, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GameState, Grade, MatchEvent, Player, PointReason, Role, Skill, TeamSide, GRADE_LABEL, SKILL_LABEL, ROLE_LABEL, POINT_REASONS } from './types';
 import {
   autoPointFor, calculateStats, currentSetNumber, formatMatchDate, getSetLimit, isSetWon,
-  playerLabel, scoreForSet, SETS_TO_WIN, formatValue,
+  playerLabel, scoreForSet, SETS_TO_WIN, formatValue, detectTrends,
 } from './utils';
 import TrackingView from './TrackingView';
 import ReportView from './ReportView';
@@ -65,6 +65,7 @@ export default function App() {
   const [setEndWinner, setSetEndWinner] = useState<TeamSide | null>(null);
   const [confirmState, setConfirmState] = useState<ConfirmState>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [showTrends, setShowTrends] = useState(false);
   const feedbackTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -79,6 +80,7 @@ export default function App() {
   const score = useMemo(() => scoreForSet(gameState.events, setNum), [gameState.events, setNum]);
   const matchOver = gameState.sets.own >= SETS_TO_WIN || gameState.sets.opponent >= SETS_TO_WIN;
   const currentSetEvents = gameState.events.filter(e => e.set === setNum);
+  const trends = useMemo(() => detectTrends(gameState), [gameState]);
 
   // Set end detection
   useEffect(() => {
@@ -251,6 +253,15 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {trends.length > 0 && (
+            <button onClick={() => setShowTrends(true)} aria-label="Live trends"
+              className="relative p-2.5 bg-white/5 hover:bg-white/10 rounded-full transition-colors border border-white/10">
+              <Zap className="w-4 h-4 text-primary" />
+              <span className="absolute -top-1 -right-1 w-4 h-4 bg-primary text-black text-[9px] font-black rounded-full flex items-center justify-center">
+                {trends.length}
+              </span>
+            </button>
+          )}
           <button onClick={() => setView(view === 'track' ? 'report' : 'track')} aria-label="Toggle report"
             className="p-2.5 bg-white/5 hover:bg-white/10 rounded-full transition-colors border border-white/10">
             {view === 'track' ? <BarChart3 className="w-4 h-4" /> : <Activity className="w-4 h-4" />}
@@ -326,6 +337,41 @@ export default function App() {
                   Undo last point
                 </button>
               </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* TRENDS MODAL */}
+      <AnimatePresence>
+        {showTrends && (
+          <div className="fixed inset-0 z-[150] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-xl" onClick={() => setShowTrends(false)}>
+            <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 100, opacity: 0 }}
+              onClick={e => e.stopPropagation()}
+              className="bg-surface border border-white/10 p-6 rounded-t-3xl sm:rounded-3xl w-full max-w-md shadow-2xl max-h-[80dvh] overflow-y-auto">
+              <div className="flex justify-between items-center mb-4">
+                <div className="flex items-center gap-2">
+                  <Zap className="w-5 h-5 text-primary" />
+                  <h3 className="text-lg font-black italic uppercase tracking-tight">Live Trends</h3>
+                </div>
+                <button onClick={() => setShowTrends(false)} className="p-2 hover:bg-white/10 rounded-full"><X className="w-5 h-5" /></button>
+              </div>
+              {trends.length === 0 ? (
+                <div className="text-center py-12 opacity-30 text-sm">No trends right now. Keep tracking!</div>
+              ) : (
+                <div className="space-y-2">
+                  {trends.map((t, i) => (
+                    <div key={i} className={`p-3 rounded-xl border ${
+                      t.tone === 'alert' ? 'bg-secondary/20 text-secondary border-secondary/30' :
+                      t.tone === 'warning' ? 'bg-accent/20 text-accent border-accent/30' :
+                      'bg-primary/20 text-primary border-primary/30'
+                    }`}>
+                      <div className="text-[9px] font-bold uppercase tracking-widest opacity-60 mb-0.5">{t.group}</div>
+                      <div className="text-xs font-bold uppercase leading-tight">{t.message}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </motion.div>
           </div>
         )}
