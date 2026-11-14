@@ -16,10 +16,13 @@ function SkillBlock({ skill, line }: { skill: Skill; line: SkillLine }) {
         <span className="text-[9px] font-bold uppercase tracking-widest text-white/40">{SKILL_LABEL[skill]}</span>
         <span className={`text-base font-black italic ${valueTone(skill, line.value)}`}>{formatValue(skill, line.value)}</span>
       </div>
-      <div className="grid grid-cols-3 gap-1 text-center font-mono text-xs">
-        <span className="text-danger">−{line.minus}</span>
-        <span className="text-white/70">0:{line.zero}</span>
-        <span className="text-success">#{line.plus}</span>
+      <div className="grid grid-cols-3 gap-1 text-center">
+        {([['−', line.minus, 'text-danger'], ['0', line.zero, 'text-white/70'], ['#', line.plus, 'text-success']] as [string, number, string][]).map(([sym, n, tone]) => (
+          <div key={sym} className="bg-black/20 rounded-md py-1">
+            <div className={`text-[10px] font-black leading-none ${tone}`}>{sym}</div>
+            <div className="text-sm font-mono font-bold leading-tight mt-0.5">{n}</div>
+          </div>
+        ))}
       </div>
       <div className="text-[9px] text-white/30 text-center mt-1">{line.total} total</div>
     </div>
@@ -83,7 +86,7 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
         <div className="grid grid-cols-3 gap-2">
           {(['serve', 'attack', 'pass'] as Skill[]).map(s => <SkillBlock key={s} skill={s} line={stats.team[s]} />)}
         </div>
-        <p className="text-[10px] text-white/30">Serve and pass: average (− = 0, 0 = 1, # = 2). Attack: (# − −) / total.</p>
+        <p className="text-[10px] text-white/30">Efficiency for every skill: (# − −) / total.</p>
       </div>
 
       {/* Opponent */}

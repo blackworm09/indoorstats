@@ -61,7 +61,7 @@ export interface SkillLine {
   zero: number;
   plus: number;
   total: number;
-  value: number | null; // serve/pass: average 0-2, attack: efficiency
+  value: number | null; // efficiency: (# − −) / total
 }
 
 const emptyLine = (): SkillLine => ({ minus: 0, zero: 0, plus: 0, total: 0, value: null });
@@ -69,11 +69,8 @@ const emptyLine = (): SkillLine => ({ minus: 0, zero: 0, plus: 0, total: 0, valu
 function finish(line: SkillLine, skill: Skill): SkillLine {
   line.total = line.minus + line.zero + line.plus;
   if (line.total === 0) { line.value = null; return line; }
-  if (skill === 'attack') {
-    line.value = (line.plus - line.minus) / line.total;
-  } else {
-    line.value = (line.zero * 1 + line.plus * 2) / line.total;
-  }
+  // Efficiency for every skill: (# − −) / total
+  line.value = (line.plus - line.minus) / line.total;
   return line;
 }
 
@@ -146,35 +143,29 @@ export function countsByPlayer(events: MatchEvent[]) {
 
 export function formatValue(skill: Skill, value: number | null): string {
   if (value === null) return '–';
-  if (skill === 'attack') return `${(value * 100).toFixed(0)}%`;
-  return value.toFixed(2);
+  return `${(value * 100).toFixed(0)}%`;
 }
 
-// Colour cue: attack eff vs 0/0.3, averages vs 1.0/1.5
+// Colour cue: green at 30%+ for attack, 20%+ for serve/pass; red below 0
 export function valueTone(skill: Skill, value: number | null): string {
   if (value === null) return 'text-white/30';
-  if (skill === 'attack') return value >= 0.3 ? 'text-success' : value < 0 ? 'text-danger' : 'text-white';
-  return value >= 1.5 ? 'text-success' : value < 1 ? 'text-danger' : 'text-white';
+  const good = skill === 'attack' ? 0.3 : 0.2;
+  return value >= good ? 'text-success' : value < 0 ? 'text-danger' : 'text-white';
 }
 
 // ---------- Live trends (quiet, no pop-ups) ----------
 export type TrendTone = 'alert' | 'warning' | 'info';
 export interface Trend { message: string; tone: TrendTone; group: string }
 
-const gradeValue = (g: Grade) => (g === 'plus' ? 2 : g === 'zero' ? 1 : 0);
 const pct = (v: number) => `${(v * 100).toFixed(0)}%`;
 
-function attackEff(list: StatEvent[]) {
+function efficiency(list: StatEvent[]) {
   if (list.length === 0) return null;
   const k = list.filter(e => e.grade === 'plus').length;
   const err = list.filter(e => e.grade === 'minus').length;
   return (k - err) / list.length;
 }
 
-function passAvg(list: StatEvent[]) {
-  if (list.length === 0) return null;
-  return list.reduce((sum, e) => sum + gradeValue(e.grade), 0) / list.length;
-}
 
 export function detectTrends(state: GameState): Trend[] {
   const trends: Trend[] = [];
@@ -189,8 +180,8 @@ export function detectTrends(state: GameState): Trend[] {
     // Passing: last 6 passes
     const passes = mine.filter(e => e.skill === 'pass').slice(-6);
     if (passes.length >= 4) {
-      const avg = passAvg(passes)!;
-      if (avg < 1) trends.push({ group: 'Passing', tone: 'warning', message: `${name} passing ${avg.toFixed(2)} avg over the last ${passes.length}. Under pressure.` });
+      const eff = efficiency(passes)!;
+      if (eff < 0) trends.push({ group: 'Passing', tone: 'warning', message: `${name} passing eff ${pct(eff)} over the last ${passes.length}. Under pressure.` });
     }
 
     // Serving: last 5 serves
@@ -206,7 +197,7 @@ export function detectTrends(state: GameState): Trend[] {
     if (kills >= 4 && errs === 0) {
       trends.push({ group: 'Attack', tone: 'info', message: `${name} hot: ${kills} kills, 0 errors in the last ${recent.length}. Keep feeding.` });
     } else if (attacks.length >= 5) {
-      const eff = attackEff(attacks)!;
+      const eff = efficiency(attacks)!;
       if (eff <= -0.1) trends.push({ group: 'Attack', tone: 'warning', message: `${name} attack eff ${pct(eff)} on ${attacks.length} swings. Go elsewhere.` });
     }
   });
@@ -248,16 +239,16 @@ export function detectTrends(state: GameState): Trend[] {
     const cur = inSet(setNum), prev = inSet(setNum - 1);
     const curAtk = cur.filter(e => e.skill === 'attack'), prevAtk = prev.filter(e => e.skill === 'attack');
     if (curAtk.length >= 5 && prevAtk.length >= 5) {
-      const a = attackEff(curAtk)!, b = attackEff(prevAtk)!;
+      const a = efficiency(curAtk)!, b = efficiency(prevAtk)!;
       if (Math.abs(a - b) >= 0.15) {
         trends.push({ group: 'Set vs set', tone: a < b ? 'warning' : 'info', message: `Attack eff ${a < b ? 'down' : 'up'} from ${pct(b)} to ${pct(a)} vs set ${setNum - 1}.` });
       }
     }
     const curPas = cur.filter(e => e.skill === 'pass'), prevPas = prev.filter(e => e.skill === 'pass');
     if (curPas.length >= 5 && prevPas.length >= 5) {
-      const a = passAvg(curPas)!, b = passAvg(prevPas)!;
-      if (Math.abs(a - b) >= 0.3) {
-        trends.push({ group: 'Set vs set', tone: a < b ? 'warning' : 'info', message: `Team passing ${a < b ? 'down' : 'up'} from ${b.toFixed(2)} to ${a.toFixed(2)} vs set ${setNum - 1}.` });
+      const a = efficiency(curPas)!, b = efficiency(prevPas)!;
+      if (Math.abs(a - b) >= 0.2) {
+        trends.push({ group: 'Set vs set', tone: a < b ? 'warning' : 'info', message: `Team passing eff ${a < b ? 'down' : 'up'} from ${pct(b)} to ${pct(a)} vs set ${setNum - 1}.` });
       }
     }
   }

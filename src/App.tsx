@@ -229,7 +229,7 @@ export default function App() {
     if (gameState.setHistory.length) {
       csv += `Set Scores: ${gameState.setHistory.map((s, i) => `Set${i + 1} ${s.own}-${s.opponent}`).join(', ')}\n`;
     }
-    csv += `\nPlayer,Role,Serve -,Serve 0,Serve #,Serve Avg,Attack -,Attack 0,Attack #,Attack Eff,Pass -,Pass 0,Pass #,Pass Avg\n`;
+    csv += `\nPlayer,Role,Serve -,Serve 0,Serve #,Serve Eff,Attack -,Attack 0,Attack #,Attack Eff,Pass -,Pass 0,Pass #,Pass Eff\n`;
     const line = (label: string, role: string, s: typeof st.team) =>
       `${label},${role},${s.serve.minus},${s.serve.zero},${s.serve.plus},${formatValue('serve', s.serve.value)},` +
       `${s.attack.minus},${s.attack.zero},${s.attack.plus},${formatValue('attack', s.attack.value)},` +
