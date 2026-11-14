@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, BarChart3, Settings, XCircle, Trophy, Plus, Trash2, Minus, Zap, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { GameState, Grade, MatchEvent, Player, PointReason, Role, Skill, TeamSide, GRADE_LABEL, SKILL_LABEL, ROLE_LABEL, POINT_REASONS } from './types';
+import { GameState, Grade, MatchEvent, PendingRally, Player, PointReason, Role, Skill, TeamSide, TrackMode, GRADE_LABEL, SKILL_LABEL, ROLE_LABEL, POINT_REASONS } from './types';
 import {
   autoPointFor, calculateStats, currentSetNumber, formatMatchDate, getSetLimit, isSetWon,
   playerLabel, scoreForSet, SETS_TO_WIN, formatValue, detectTrends,
 } from './utils';
 import TrackingView from './TrackingView';
+import RallyView from './RallyView';
 import ReportView from './ReportView';
 
 const MATCH_KEY = 'indoorstats_match';
@@ -20,7 +21,7 @@ const DEFAULT_ROLES: [Role, boolean][] = [
 ];
 
 const defaultRoster = (): Player[] =>
-  DEFAULT_ROLES.map(([role, onCourt]) => ({ id: uid('p'), name: '', number: '', role, onCourt }));
+  DEFAULT_ROLES.map(([role, onCourt], i) => ({ id: uid('p'), name: '', number: '', role, onCourt, slot: i + 1 }));
 
 function freshState(players: Player[]): GameState {
   return {
@@ -32,6 +33,8 @@ function freshState(players: Player[]): GameState {
     opponentName: '',
     autoScore: true,
     subLimit: 8,
+    mode: 'rally',
+    pending: null,
   };
 }
 
@@ -39,8 +42,9 @@ const ROSTER_SIZE = 14;
 
 // Older saves may have fewer slots: top up to 14 with bench hitters
 function padRoster(players: Player[]): Player[] {
+  const withSlots = players.map((p, i) => ({ ...p, slot: p.slot ?? i + 1 }));
   const extra = Math.max(0, ROSTER_SIZE - players.length);
-  return [...players, ...Array.from({ length: extra }, () => ({ id: uid('p'), name: '', number: '', role: 'hitter' as Role, onCourt: false }))];
+  return [...withSlots, ...Array.from({ length: extra }, (_, k) => ({ id: uid('p'), name: '', number: '', role: 'hitter' as Role, onCourt: false, slot: players.length + k + 1 }))];
 }
 
 function loadState(): GameState {
@@ -142,25 +146,45 @@ export default function App() {
   const handleUndo = () => {
     setGameState(prev => {
       const s = currentSetNumber(prev);
+      // Rally mode: step back inside the rally in progress first
+      const p = prev.mode === 'rally' && prev.pending && prev.pending.set === s ? prev.pending : null;
+      if (p && p.history.length > 0) {
+        const h = p.history[p.history.length - 1];
+        return { ...prev, pending: { ...p, step: h.step, actions: p.actions.slice(0, h.actionCount), history: p.history.slice(0, -1) } };
+      }
       let lastIdx = -1;
       for (let i = prev.events.length - 1; i >= 0; i--) {
         if (prev.events[i].set === s) { lastIdx = i; break; }
       }
-      if (lastIdx < 0) return prev;
+      if (lastIdx < 0) {
+        // Nothing scored yet: back to "who serves first?"
+        return p ? { ...prev, pending: null } : prev;
+      }
       const last = prev.events[lastIdx];
-      const events = prev.events.filter((_, i) => i !== lastIdx);
+      // A whole rally comes off together
+      const events = last.rallyId
+        ? prev.events.filter(e => e.rallyId !== last.rallyId)
+        : prev.events.filter((_, i) => i !== lastIdx);
       const players = last.kind === 'sub' ? swapPlayers(prev.players, last.outId, last.inId) : prev.players;
-      return { ...prev, events, players };
+      return { ...prev, events, players, pending: last.kind === 'sub' ? prev.pending : null };
     });
     flash('Undone');
   };
+
+  const commitRally = (events: MatchEvent[], message: string) => {
+    setGameState(prev => ({ ...prev, events: [...prev.events, ...events], pending: null }));
+    flash(message);
+  };
+
+  const setPending = (pending: PendingRally | null) => setGameState(prev => ({ ...prev, pending }));
+  const setMode = (mode: TrackMode) => setGameState(prev => ({ ...prev, mode }));
 
   const closeSet = (winner: TeamSide) => {
     setGameState(prev => {
       const s = currentSetNumber(prev);
       const sc = scoreForSet(prev.events, s);
       const sets = { ...prev.sets, [winner]: prev.sets[winner] + 1 };
-      return { ...prev, sets, setHistory: [...prev.setHistory, sc] };
+      return { ...prev, sets, setHistory: [...prev.setHistory, sc], pending: null };
     });
     setSetEndWinner(null);
     const newWins = gameState.sets[winner] + 1;
@@ -189,6 +213,7 @@ export default function App() {
           ...freshState(prev.players),
           autoScore: prev.autoScore,
           subLimit: prev.subLimit,
+          mode: prev.mode,
         }));
         setView('track');
         setShowConfig(true);
@@ -224,7 +249,7 @@ export default function App() {
   const updatePlayer = (id: string, patch: Partial<Player>) =>
     setGameState(prev => ({ ...prev, players: prev.players.map(p => (p.id === id ? { ...p, ...patch } : p)) }));
   const addPlayer = () =>
-    setGameState(prev => ({ ...prev, players: [...prev.players, { id: uid('p'), name: '', number: '', role: 'hitter', onCourt: false }] }));
+    setGameState(prev => ({ ...prev, players: [...prev.players, { id: uid('p'), name: '', number: '', role: 'hitter', onCourt: false, slot: Math.max(0, ...prev.players.map(p => p.slot ?? 0)) + 1 }] }));
   const removePlayer = (id: string) => {
     const hasStats = gameState.events.some(e => (e.kind === 'stat' && e.playerId === id) || (e.kind === 'sub' && (e.inId === id || e.outId === id)));
     const doRemove = () => setGameState(prev => ({ ...prev, players: prev.players.filter(p => p.id !== id) }));
@@ -282,15 +307,35 @@ export default function App() {
                 Match over · {gameState.sets.own}-{gameState.sets.opponent}. Check the report or start a new match.
               </div>
             )}
-            <TrackingView
-              gameState={gameState}
-              onStat={handleStat}
-              onPoint={handlePoint}
-              onSub={handleSub}
-              onUndo={handleUndo}
-              canUndo={currentSetEvents.length > 0}
-              feedback={feedback}
-            />
+            {/* Mode toggle */}
+            <div className="mx-4 sm:mx-6 mt-4 flex gap-1 p-1 bg-white/5 rounded-xl border border-white/10">
+              {([['rally', 'Rally flow'], ['quick', 'Quick tap']] as [TrackMode, string][]).map(([m, label]) => (
+                <button key={m} onClick={() => setMode(m)}
+                  className={`flex-1 py-2 rounded-lg font-bold uppercase text-[11px] tracking-wider transition-all ${gameState.mode === m ? 'bg-primary text-black' : 'text-white/40'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {gameState.mode === 'rally' ? (
+              <RallyView
+                gameState={gameState}
+                setPending={setPending}
+                commitRally={commitRally}
+                onSub={handleSub}
+                onUndo={handleUndo}
+                canUndo={currentSetEvents.length > 0 || !!(gameState.pending && gameState.pending.set === setNum)}
+              />
+            ) : (
+              <TrackingView
+                gameState={gameState}
+                onStat={handleStat}
+                onPoint={handlePoint}
+                onSub={handleSub}
+                onUndo={handleUndo}
+                canUndo={currentSetEvents.length > 0}
+                feedback={feedback}
+              />
+            )}
           </div>
         ) : (
           <div className="flex-1 bg-surface overflow-y-auto">
@@ -298,6 +343,16 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Tap feedback (rally mode; quick mode shows its own) */}
+      <AnimatePresence>
+        {feedback && view === 'track' && gameState.mode === 'rally' && (
+          <motion.div key={feedback} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, transition: { duration: 0 } }}
+            className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-white text-black text-xs font-black uppercase tracking-wider shadow-2xl whitespace-nowrap">
+            {feedback}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* BOTTOM BAR */}
       {view === 'track' && (
@@ -428,7 +483,7 @@ export default function App() {
                         className="w-12 bg-white/5 border border-white/10 focus:border-primary p-2 rounded-lg outline-none font-mono font-bold text-center text-sm" />
                       <input type="text" value={p.name}
                         onChange={e => updatePlayer(p.id, { name: e.target.value })}
-                        placeholder={`Player ${idx + 1}`} aria-label="Player name"
+                        placeholder={`Player ${p.slot ?? idx + 1}`} aria-label="Player name"
                         className="flex-1 min-w-0 bg-white/5 border border-white/10 focus:border-primary p-2 rounded-lg outline-none font-bold uppercase text-sm" />
                       <button onClick={() => removePlayer(p.id)} aria-label="Remove player"
                         className="p-2 text-white/30 hover:text-danger rounded-lg"><Trash2 className="w-4 h-4" /></button>

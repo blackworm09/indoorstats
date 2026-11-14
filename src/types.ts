@@ -9,11 +9,13 @@ export interface Player {
   number: string;
   role: Role;
   onCourt: boolean;
+  slot?: number; // stable placeholder number for unnamed players
 }
 
 export interface StatEvent {
   kind: 'stat';
   id: string;
+  rallyId?: string;
   set: number;
   playerId: string;
   skill: Skill;
@@ -27,6 +29,7 @@ export type PointReason = 'opp_attack_point' | 'opp_ace' | 'opp_attack_error' | 
 export interface PointEvent {
   kind: 'point';
   id: string;
+  rallyId?: string;
   set: number;
   team: TeamSide;
   reason?: PointReason;
@@ -43,6 +46,7 @@ export const POINT_REASONS: { reason: Exclude<PointReason, 'other'>; team: TeamS
 export interface SubEvent {
   kind: 'sub';
   id: string;
+  rallyId?: string;
   set: number;
   inId: string;
   outId: string;
@@ -51,6 +55,19 @@ export interface SubEvent {
 }
 
 export type MatchEvent = StatEvent | PointEvent | SubEvent;
+
+export type RallyStep = 'our_serve' | 'opp_serve' | 'our_attack' | 'opp_attack';
+
+export interface PendingRally {
+  id: string;
+  set: number;
+  servingTeam: TeamSide;
+  step: RallyStep;
+  actions: StatEvent[]; // not yet committed (e.g. a pass before the attack)
+  history: { step: RallyStep; actionCount: number }[];
+}
+
+export type TrackMode = 'rally' | 'quick';
 
 export interface GameState {
   players: Player[];
@@ -61,6 +78,8 @@ export interface GameState {
   opponentName: string;
   autoScore: boolean;
   subLimit: number;
+  mode: TrackMode;
+  pending: PendingRally | null;
 }
 
 export const SKILLS_BY_ROLE: Record<Role, Skill[]> = {

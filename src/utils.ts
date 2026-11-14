@@ -52,7 +52,8 @@ export function playerLabel(p: Player, idx?: number): string {
   if (name && num) return `#${num} ${name}`;
   if (name) return name;
   if (num) return `#${num}`;
-  return `Player ${idx !== undefined ? idx + 1 : ''}`.trim();
+  const n = p.slot ?? (idx !== undefined ? idx + 1 : undefined);
+  return `Player ${n ?? ''}`.trim();
 }
 
 export interface SkillLine {
@@ -264,4 +265,32 @@ export function detectTrends(state: GameState): Trend[] {
   // Most urgent first
   const order: Record<TrendTone, number> = { alert: 0, warning: 1, info: 2 };
   return trends.sort((x, y) => order[x.tone] - order[y.tone]);
+}
+
+// ---------- Rally flow helpers ----------
+// Team that won the last point in a set (they serve next)
+export function lastPointWinner(events: MatchEvent[], set: number): TeamSide | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.set !== set) continue;
+    if (e.kind === 'point') return e.team;
+    if (e.kind === 'stat' && e.point) return e.point;
+  }
+  return null;
+}
+
+// If we served the last rally and won it, the same player keeps serving
+export function suggestedServer(events: MatchEvent[], set: number): string | null {
+  let lastRallyId: string | undefined;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e.set !== set) continue;
+    if (e.kind === 'point' || (e.kind === 'stat' && e.point)) { lastRallyId = e.rallyId; break; }
+  }
+  if (!lastRallyId) return null;
+  const rally = events.filter(e => e.rallyId === lastRallyId);
+  const serve = rally.find((e): e is StatEvent => e.kind === 'stat' && e.skill === 'serve');
+  const end = rally[rally.length - 1];
+  const winner = end.kind === 'point' ? end.team : end.kind === 'stat' ? end.point : null;
+  return serve && winner === 'own' ? serve.playerId : null;
 }
