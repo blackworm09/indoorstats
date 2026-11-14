@@ -1,6 +1,6 @@
 export type TeamSide = 'own' | 'opponent';
 export type Role = 'hitter' | 'setter' | 'libero';
-export type Skill = 'serve' | 'attack' | 'pass';
+export type Skill = 'serve' | 'attack' | 'pass' | 'set'; // 'set' = setter credit on a teammate's attack
 export type Grade = 'minus' | 'zero' | 'plus'; // shown as − / 0 / #
 
 export interface Player {
@@ -82,13 +82,21 @@ export interface GameState {
   pending: PendingRally | null;
 }
 
+// Buttons in quick-tap mode
 export const SKILLS_BY_ROLE: Record<Role, Skill[]> = {
   hitter: ['serve', 'attack', 'pass'],
-  setter: ['serve'],
+  setter: ['serve', 'attack'],
   libero: ['pass'],
 };
 
-export const SKILL_LABEL: Record<Skill, string> = { serve: 'Serve', attack: 'Attack', pass: 'Pass' };
-export const SKILL_SHORT: Record<Skill, string> = { serve: 'SRV', attack: 'ATK', pass: 'PAS' };
+// What the report shows per role (assists are recorded automatically)
+export const REPORT_SKILLS_BY_ROLE: Record<Role, Skill[]> = {
+  hitter: ['serve', 'attack', 'pass'],
+  setter: ['serve', 'attack', 'set'],
+  libero: ['pass'],
+};
+
+export const SKILL_LABEL: Record<Skill, string> = { serve: 'Serve', attack: 'Attack', pass: 'Pass', set: 'Assist' };
+export const SKILL_SHORT: Record<Skill, string> = { serve: 'SRV', attack: 'ATK', pass: 'PAS', set: 'SET' };
 export const GRADE_LABEL: Record<Grade, string> = { minus: '−', zero: '0', plus: '#' };
 export const ROLE_LABEL: Record<Role, string> = { hitter: 'Hitter', setter: 'Setter', libero: 'Libero' };

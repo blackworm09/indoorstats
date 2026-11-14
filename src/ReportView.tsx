@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { BarChart3, Download, RotateCcw } from 'lucide-react';
-import { GameState, Skill, SKILLS_BY_ROLE, SKILL_LABEL, ROLE_LABEL } from './types';
+import { GameState, Skill, REPORT_SKILLS_BY_ROLE, SKILL_LABEL, ROLE_LABEL } from './types';
 import { calculateStats, formatMatchDate, formatValue, playerLabel, scoreForSet, valueTone, SkillLine, currentSetNumber } from './utils';
 
 interface ReportViewProps {
@@ -24,7 +24,7 @@ function SkillBlock({ skill, line }: { skill: Skill; line: SkillLine }) {
           </div>
         ))}
       </div>
-      <div className="text-[9px] text-white/30 text-center mt-1">{line.total} total</div>
+      <div className="text-[9px] text-white/30 text-center mt-1">{line.total} {skill === 'set' ? 'attempts' : 'total'}</div>
     </div>
   );
 }
@@ -38,8 +38,8 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
 
   const rows = stats.players
     .map((ps, idx) => ({ ...ps, idx: gameState.players.findIndex(p => p.id === ps.player.id) }))
-    .filter(ps => ps.serve.total + ps.attack.total + ps.pass.total > 0);
-  const quiet = stats.players.filter(ps => ps.serve.total + ps.attack.total + ps.pass.total === 0);
+    .filter(ps => ps.serve.total + ps.attack.total + ps.pass.total + ps.set.total > 0);
+  const quiet = stats.players.filter(ps => ps.serve.total + ps.attack.total + ps.pass.total + ps.set.total === 0);
 
   return (
     <div className="p-4 sm:p-8 overflow-y-auto max-w-3xl mx-auto space-y-6 pb-32">
@@ -83,10 +83,10 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
       {/* Team */}
       <div className="bg-surface border border-white/10 rounded-2xl p-4 space-y-3">
         <span className="text-[10px] uppercase font-bold tracking-widest text-primary">Team</span>
-        <div className="grid grid-cols-3 gap-2">
-          {(['serve', 'attack', 'pass'] as Skill[]).map(s => <SkillBlock key={s} skill={s} line={stats.team[s]} />)}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {(['serve', 'attack', 'pass', 'set'] as Skill[]).map(s => <SkillBlock key={s} skill={s} line={stats.team[s]} />)}
         </div>
-        <p className="text-[10px] text-white/30">Efficiency for every skill: (# − −) / total.</p>
+        <p className="text-[10px] text-white/30">Serve, attack, pass: efficiency (# − −) / total. Assist: kills set / attack attempts set (− 0 # = how those attacks ended).</p>
       </div>
 
       {/* Opponent */}
@@ -121,7 +121,7 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
         ) : (
           <div className="divide-y divide-white/5">
             {rows.map(ps => {
-              const skills = SKILLS_BY_ROLE[ps.player.role];
+              const skills = REPORT_SKILLS_BY_ROLE[ps.player.role];
               return (
                 <div key={ps.player.id} className="p-4 space-y-2">
                   <div className="flex items-center gap-2">

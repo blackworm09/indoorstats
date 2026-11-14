@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GameState, Grade, MatchEvent, PendingRally, Player, PointReason, Role, Skill, TeamSide, TrackMode, GRADE_LABEL, SKILL_LABEL, ROLE_LABEL, POINT_REASONS } from './types';
 import {
   autoPointFor, calculateStats, currentSetNumber, formatMatchDate, getSetLimit, isSetWon,
-  playerLabel, scoreForSet, SETS_TO_WIN, formatValue, detectTrends,
+  playerLabel, scoreForSet, SETS_TO_WIN, formatValue, detectTrends, setterFor,
 } from './utils';
 import TrackingView from './TrackingView';
 import RallyView from './RallyView';
@@ -105,10 +105,18 @@ export default function App() {
 
   const handleStat = (playerId: string, skill: Skill, grade: Grade) => {
     const point = gameState.autoScore ? autoPointFor(skill, grade) : null;
-    pushEvent({ kind: 'stat', id: uid('e'), set: setNum, playerId, skill, grade, point, timestamp: Date.now() });
+    // Attacks also credit the setter; both share a group id so Undo removes them together
+    const setterId = skill === 'attack' ? setterFor(gameState, playerId) : null;
+    const groupId = setterId ? uid('q') : undefined;
+    const ts = Date.now();
+    const newEvents: MatchEvent[] = [];
+    if (setterId) newEvents.push({ kind: 'stat', id: uid('e'), rallyId: groupId, set: setNum, playerId: setterId, skill: 'set', grade, point: null, timestamp: ts });
+    newEvents.push({ kind: 'stat', id: uid('e'), rallyId: groupId, set: setNum, playerId, skill, grade, point, timestamp: ts });
+    setGameState(prev => ({ ...prev, events: [...prev.events, ...newEvents] }));
     const p = gameState.players.find(pp => pp.id === playerId);
     const idx = gameState.players.findIndex(pp => pp.id === playerId);
-    flash(`${p ? playerLabel(p, idx) : ''} · ${SKILL_LABEL[skill]} ${GRADE_LABEL[grade]}${point ? (point === 'own' ? ' · +1 us' : ' · +1 them') : ''}`);
+    const assist = setterId && grade === 'plus' ? ` · assist ${playerLabel(gameState.players.find(pp => pp.id === setterId)!)}` : '';
+    flash(`${p ? playerLabel(p, idx) : ''} · ${SKILL_LABEL[skill]} ${GRADE_LABEL[grade]}${assist}${point ? (point === 'own' ? ' · +1 us' : ' · +1 them') : ''}`);
   };
 
   const handlePoint = (team: TeamSide, reason: PointReason = 'other') => {
@@ -229,11 +237,12 @@ export default function App() {
     if (gameState.setHistory.length) {
       csv += `Set Scores: ${gameState.setHistory.map((s, i) => `Set${i + 1} ${s.own}-${s.opponent}`).join(', ')}\n`;
     }
-    csv += `\nPlayer,Role,Serve -,Serve 0,Serve #,Serve Eff,Attack -,Attack 0,Attack #,Attack Eff,Pass -,Pass 0,Pass #,Pass Eff\n`;
+    csv += `\nPlayer,Role,Serve -,Serve 0,Serve #,Serve Eff,Attack -,Attack 0,Attack #,Attack Eff,Pass -,Pass 0,Pass #,Pass Eff,Set Attempts,Assists,Assist %\n`;
     const line = (label: string, role: string, s: typeof st.team) =>
       `${label},${role},${s.serve.minus},${s.serve.zero},${s.serve.plus},${formatValue('serve', s.serve.value)},` +
       `${s.attack.minus},${s.attack.zero},${s.attack.plus},${formatValue('attack', s.attack.value)},` +
-      `${s.pass.minus},${s.pass.zero},${s.pass.plus},${formatValue('pass', s.pass.value)}\n`;
+      `${s.pass.minus},${s.pass.zero},${s.pass.plus},${formatValue('pass', s.pass.value)},` +
+      `${s.set.total},${s.set.plus},${formatValue('set', s.set.value)}\n`;
     st.players.forEach(ps => {
       const idx = gameState.players.findIndex(p => p.id === ps.player.id);
       csv += line(playerLabel(ps.player, idx), ROLE_LABEL[ps.player.role], ps);

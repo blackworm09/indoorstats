@@ -69,8 +69,8 @@ const emptyLine = (): SkillLine => ({ minus: 0, zero: 0, plus: 0, total: 0, valu
 function finish(line: SkillLine, skill: Skill): SkillLine {
   line.total = line.minus + line.zero + line.plus;
   if (line.total === 0) { line.value = null; return line; }
-  // Efficiency for every skill: (# − −) / total
-  line.value = (line.plus - line.minus) / line.total;
+  // Assist rate for setters: kills set / attempts set. Everything else: (# − −) / total
+  line.value = skill === 'set' ? line.plus / line.total : (line.plus - line.minus) / line.total;
   return line;
 }
 
@@ -79,15 +79,16 @@ export interface PlayerStats {
   serve: SkillLine;
   attack: SkillLine;
   pass: SkillLine;
+  set: SkillLine;
 }
 
 // set = null means whole match
 export function calculateStats(state: GameState, set: number | null) {
   const stats: Record<string, PlayerStats> = {};
   state.players.forEach(p => {
-    stats[p.id] = { player: p, serve: emptyLine(), attack: emptyLine(), pass: emptyLine() };
+    stats[p.id] = { player: p, serve: emptyLine(), attack: emptyLine(), pass: emptyLine(), set: emptyLine() };
   });
-  const team = { serve: emptyLine(), attack: emptyLine(), pass: emptyLine() };
+  const team = { serve: emptyLine(), attack: emptyLine(), pass: emptyLine(), set: emptyLine() };
   const opponent = { opp_attack_point: 0, opp_ace: 0, opp_attack_error: 0, opp_serve_error: 0, other_us: 0, other_them: 0 };
 
   state.events.forEach(e => {
@@ -110,6 +111,7 @@ export function calculateStats(state: GameState, set: number | null) {
     serve: finish(ps.serve, 'serve'),
     attack: finish(ps.attack, 'attack'),
     pass: finish(ps.pass, 'pass'),
+    set: finish(ps.set, 'set'),
   }));
 
   return {
@@ -119,6 +121,7 @@ export function calculateStats(state: GameState, set: number | null) {
       serve: finish(team.serve, 'serve'),
       attack: finish(team.attack, 'attack'),
       pass: finish(team.pass, 'pass'),
+      set: finish(team.set, 'set'),
     },
   };
 }
@@ -134,6 +137,7 @@ export function countsByPlayer(events: MatchEvent[]) {
         serve: { minus: 0, zero: 0, plus: 0 },
         attack: { minus: 0, zero: 0, plus: 0 },
         pass: { minus: 0, zero: 0, plus: 0 },
+        set: { minus: 0, zero: 0, plus: 0 },
       };
     }
     map[s.playerId][s.skill][s.grade]++;
@@ -149,6 +153,7 @@ export function formatValue(skill: Skill, value: number | null): string {
 // Colour cue: green at 30%+ for attack, 20%+ for serve/pass; red below 0
 export function valueTone(skill: Skill, value: number | null): string {
   if (value === null) return 'text-white/30';
+  if (skill === 'set') return value >= 0.4 ? 'text-success' : 'text-white';
   const good = skill === 'attack' ? 0.3 : 0.2;
   return value >= good ? 'text-success' : value < 0 ? 'text-danger' : 'text-white';
 }
@@ -284,4 +289,12 @@ export function suggestedServer(events: MatchEvent[], set: number): string | nul
   const end = rally[rally.length - 1];
   const winner = end.kind === 'point' ? end.team : end.kind === 'stat' ? end.point : null;
   return serve && winner === 'own' ? serve.playerId : null;
+}
+
+// ---------- Setter assists ----------
+// The setter on court gets the credit for a teammate's attack. No credit when she attacks herself.
+export function setterFor(state: GameState, attackerId: string): string | null {
+  const setter = state.players.find(p => p.onCourt && p.role === 'setter');
+  if (!setter || setter.id === attackerId) return null;
+  return setter.id;
 }

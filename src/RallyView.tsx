@@ -5,7 +5,7 @@ import {
   GameState, Grade, MatchEvent, PendingRally, Player, PointReason, RallyStep, Skill, StatEvent, TeamSide,
   GRADE_LABEL, ROLE_LABEL,
 } from './types';
-import { currentSetNumber, lastPointWinner, playerLabel, subsUsed, suggestedServer } from './utils';
+import { currentSetNumber, lastPointWinner, playerLabel, setterFor, subsUsed, suggestedServer } from './utils';
 
 interface RallyViewProps {
   gameState: GameState;
@@ -84,9 +84,13 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
       return advance(rally, 'our_attack', [...rally.actions, stat(rally, selected, 'pass', grade, null)]);
     }
     if (rally.step === 'our_attack') {
-      if (grade === 'plus') return endWithStat(rally, stat(rally, selected, 'attack', 'plus', 'own'), `${who} kill · +1 us`);
-      if (grade === 'minus') return endWithStat(rally, stat(rally, selected, 'attack', 'minus', 'opponent'), `${who} attack error · +1 them`);
-      return advance(rally, 'opp_attack', [...rally.actions, stat(rally, selected, 'attack', 'zero', null)]);
+      // Setter gets an attempt on every teammate attack, an assist on a kill
+      const setterId = setterFor(gameState, selected);
+      const setEv = setterId ? [stat(rally, setterId, 'set', grade, null)] : [];
+      const assist = setterId && grade === 'plus' ? ` · assist ${nameOf(setterId)}` : '';
+      if (grade === 'plus') return commitRally([...rally.actions, ...setEv, stat(rally, selected, 'attack', 'plus', 'own')], `${who} kill${assist} · +1 us`);
+      if (grade === 'minus') return commitRally([...rally.actions, ...setEv, stat(rally, selected, 'attack', 'minus', 'opponent')], `${who} attack error · +1 them`);
+      return advance(rally, 'opp_attack', [...rally.actions, ...setEv, stat(rally, selected, 'attack', 'zero', null)]);
     }
   };
 
@@ -106,7 +110,7 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
   const eligible = (step: RallyStep) => court.filter(({ p }) =>
     step === 'our_serve' ? p.role !== 'libero' :
     step === 'opp_serve' ? p.role !== 'setter' :
-    step === 'our_attack' ? p.role === 'hitter' : false);
+    step === 'our_attack' ? p.role !== 'libero' : false);
 
   const used = subsUsed(gameState.events, setNum);
 
@@ -146,7 +150,7 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
   const crumbs: string[] = [];
   if (rally) {
     crumbs.push(rally.servingTeam === 'own' ? 'We serve' : 'They serve');
-    rally.actions.forEach(a => crumbs.push(`${nameOf(a.playerId)} ${a.skill} ${GRADE_LABEL[a.grade]}`));
+    rally.actions.filter(a => a.skill !== 'set').forEach(a => crumbs.push(`${nameOf(a.playerId)} ${a.skill} ${GRADE_LABEL[a.grade]}`));
   }
 
   return (
@@ -198,15 +202,15 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
               <div className="grid gap-2">
                 <button onClick={() => handleOppAttack('minus')}
                   className="py-5 rounded-2xl bg-primary text-black font-black uppercase active:scale-95 transition-all">
-                  − Their error <span className="block text-[10px] opacity-60 mt-0.5">+1 us</span>
+                  Error <span className="block text-[10px] opacity-60 mt-0.5">+1 us</span>
                 </button>
                 <button onClick={() => handleOppAttack('zero')}
                   className="py-5 rounded-2xl bg-white/10 border border-white/20 text-white font-black uppercase active:scale-95 transition-all">
-                  0 We dig it <span className="block text-[10px] opacity-60 mt-0.5">Our attack next</span>
+                  0 <span className="block text-[10px] opacity-60 mt-0.5">Our attack next</span>
                 </button>
                 <button onClick={() => handleOppAttack('plus')}
                   className="py-5 rounded-2xl bg-secondary text-black font-black uppercase active:scale-95 transition-all">
-                  # Their kill <span className="block text-[10px] opacity-60 mt-0.5">+1 them</span>
+                  Kill <span className="block text-[10px] opacity-60 mt-0.5">+1 them</span>
                 </button>
               </div>
             ) : (
