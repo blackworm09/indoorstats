@@ -61,10 +61,11 @@ export interface SkillLine {
   zero: number;
   plus: number;
   total: number;
+  recycle: number; // attacks only
   value: number | null; // efficiency: (# − −) / total
 }
 
-const emptyLine = (): SkillLine => ({ minus: 0, zero: 0, plus: 0, total: 0, value: null });
+const emptyLine = (): SkillLine => ({ minus: 0, zero: 0, plus: 0, total: 0, recycle: 0, value: null });
 
 function finish(line: SkillLine, skill: Skill): SkillLine {
   line.total = line.minus + line.zero + line.plus;
@@ -104,6 +105,7 @@ export function calculateStats(state: GameState, set: number | null) {
     if (!ps) return;
     ps[e.skill][e.grade]++;
     team[e.skill][e.grade]++;
+    if (e.recycle) { ps[e.skill].recycle++; team[e.skill].recycle++; }
   });
 
   const players = Object.values(stats).map(ps => ({
@@ -297,4 +299,11 @@ export function setterFor(state: GameState, attackerId: string): string | null {
   const setter = state.players.find(p => p.onCourt && p.role === 'setter');
   if (!setter || setter.id === attackerId) return null;
   return setter.id;
+}
+
+// Recycles per player (for the quick-tap button badge)
+export function recyclesByPlayer(events: MatchEvent[]) {
+  const map: Record<string, number> = {};
+  events.forEach(e => { if (e.kind === 'stat' && e.recycle) map[e.playerId] = (map[e.playerId] ?? 0) + 1; });
+  return map;
 }

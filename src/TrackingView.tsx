@@ -5,11 +5,11 @@ import {
   GameState, Grade, Player, PointReason, Skill, TeamSide,
   SKILLS_BY_ROLE, SKILL_SHORT, GRADE_LABEL, ROLE_LABEL, POINT_REASONS,
 } from './types';
-import { countsByPlayer, currentSetNumber, playerLabel, subsUsed } from './utils';
+import { countsByPlayer, currentSetNumber, playerLabel, recyclesByPlayer, subsUsed } from './utils';
 
 interface TrackingViewProps {
   gameState: GameState;
-  onStat: (playerId: string, skill: Skill, grade: Grade) => void;
+  onStat: (playerId: string, skill: Skill, grade: Grade, recycle?: boolean) => void;
   onPoint: (team: TeamSide, reason?: PointReason) => void;
   onSub: (inId: string, outId: string) => void;
   onUndo: () => void;
@@ -32,6 +32,7 @@ const GRADE_STYLE: Record<Grade, string> = {
 export default function TrackingView({ gameState, onStat, onPoint, onSub, onUndo, canUndo, feedback }: TrackingViewProps) {
   const [pendingSwap, setPendingSwap] = useState<string | null>(null);
   const counts = countsByPlayer(gameState.events);
+  const recycles = recyclesByPlayer(gameState.events);
   const setNum = currentSetNumber(gameState);
   const used = subsUsed(gameState.events, setNum);
 
@@ -96,16 +97,21 @@ export default function TrackingView({ gameState, onStat, onPoint, onSub, onUndo
           {skills.map(skill => (
             <div key={skill} className="flex items-center gap-2">
               <span className="w-9 shrink-0 text-[10px] font-bold uppercase tracking-wider text-white/40">{SKILL_SHORT[skill]}</span>
-              <div className="flex-1 grid grid-cols-3 gap-1.5">
-                {(['minus', 'zero', 'plus'] as Grade[]).map(g => {
-                  const n = counts[p.id]?.[skill]?.[g] ?? 0;
+              <div className={`flex-1 grid gap-1.5 ${skill === 'attack' ? 'grid-cols-4' : 'grid-cols-3'}`}>
+                {(skill === 'attack' ? ['minus', 'recycle', 'zero', 'plus'] : ['minus', 'zero', 'plus']).map(key => {
+                  const isRecycle = key === 'recycle';
+                  const g: Grade = isRecycle ? 'zero' : key as Grade;
+                  // 0 count excludes recycles (stored as 0 attempts)
+                  const n = isRecycle ? (recycles[p.id] ?? 0)
+                    : g === 'zero' && skill === 'attack' ? (counts[p.id]?.attack?.zero ?? 0) - (recycles[p.id] ?? 0)
+                    : counts[p.id]?.[skill]?.[g] ?? 0;
                   return (
                     <button
-                      key={g}
-                      onClick={() => onStat(p.id, skill, g)}
-                      className={`relative h-11 rounded-xl border font-black text-lg transition-all active:scale-90 ${GRADE_STYLE[g]}`}
+                      key={key}
+                      onClick={() => onStat(p.id, skill, g, isRecycle)}
+                      className={`relative h-11 rounded-xl border font-black text-lg transition-all active:scale-90 ${isRecycle ? 'bg-accent/15 text-accent border-accent/30 active:bg-accent active:text-black' : GRADE_STYLE[g]}`}
                     >
-                      {GRADE_LABEL[g]}
+                      {isRecycle ? '↺' : GRADE_LABEL[g]}
                       {n > 0 && (
                         <span className="absolute top-0.5 right-1.5 text-[9px] font-mono font-bold opacity-60">{n}</span>
                       )}

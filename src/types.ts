@@ -20,6 +20,7 @@ export interface StatEvent {
   playerId: string;
   skill: Skill;
   grade: Grade;
+  recycle?: boolean; // attack kept in play on our side (counts as a 0 attempt)
   point: TeamSide | null; // auto-awarded point, if any
   timestamp: number;
 }

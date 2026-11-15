@@ -103,20 +103,20 @@ export default function App() {
 
   const pushEvent = (e: MatchEvent) => setGameState(prev => ({ ...prev, events: [...prev.events, e] }));
 
-  const handleStat = (playerId: string, skill: Skill, grade: Grade) => {
-    const point = gameState.autoScore ? autoPointFor(skill, grade) : null;
+  const handleStat = (playerId: string, skill: Skill, grade: Grade, recycle = false) => {
+    const point = gameState.autoScore && !recycle ? autoPointFor(skill, grade) : null;
     // Attacks also credit the setter; both share a group id so Undo removes them together
     const setterId = skill === 'attack' ? setterFor(gameState, playerId) : null;
     const groupId = setterId ? uid('q') : undefined;
     const ts = Date.now();
     const newEvents: MatchEvent[] = [];
     if (setterId) newEvents.push({ kind: 'stat', id: uid('e'), rallyId: groupId, set: setNum, playerId: setterId, skill: 'set', grade, point: null, timestamp: ts });
-    newEvents.push({ kind: 'stat', id: uid('e'), rallyId: groupId, set: setNum, playerId, skill, grade, point, timestamp: ts });
+    newEvents.push({ kind: 'stat', id: uid('e'), rallyId: groupId, set: setNum, playerId, skill, grade, point, timestamp: ts, ...(recycle ? { recycle: true } : {}) });
     setGameState(prev => ({ ...prev, events: [...prev.events, ...newEvents] }));
     const p = gameState.players.find(pp => pp.id === playerId);
     const idx = gameState.players.findIndex(pp => pp.id === playerId);
     const assist = setterId && grade === 'plus' ? ` · assist ${playerLabel(gameState.players.find(pp => pp.id === setterId)!)}` : '';
-    flash(`${p ? playerLabel(p, idx) : ''} · ${SKILL_LABEL[skill]} ${GRADE_LABEL[grade]}${assist}${point ? (point === 'own' ? ' · +1 us' : ' · +1 them') : ''}`);
+    flash(`${p ? playerLabel(p, idx) : ''} · ${SKILL_LABEL[skill]} ${recycle ? 'recycle' : GRADE_LABEL[grade]}${assist}${point ? (point === 'own' ? ' · +1 us' : ' · +1 them') : ''}`);
   };
 
   const handlePoint = (team: TeamSide, reason: PointReason = 'other') => {
@@ -237,10 +237,10 @@ export default function App() {
     if (gameState.setHistory.length) {
       csv += `Set Scores: ${gameState.setHistory.map((s, i) => `Set${i + 1} ${s.own}-${s.opponent}`).join(', ')}\n`;
     }
-    csv += `\nPlayer,Role,Serve -,Serve 0,Serve #,Serve Eff,Attack -,Attack 0,Attack #,Attack Eff,Pass -,Pass 0,Pass #,Pass Eff,Set Attempts,Assists,Assist %\n`;
+    csv += `\nPlayer,Role,Serve -,Serve 0,Serve #,Serve Eff,Attack -,Attack 0,Attack #,Attack Recycles,Attack Eff,Pass -,Pass 0,Pass #,Pass Eff,Set Attempts,Assists,Assist %\n`;
     const line = (label: string, role: string, s: typeof st.team) =>
       `${label},${role},${s.serve.minus},${s.serve.zero},${s.serve.plus},${formatValue('serve', s.serve.value)},` +
-      `${s.attack.minus},${s.attack.zero},${s.attack.plus},${formatValue('attack', s.attack.value)},` +
+      `${s.attack.minus},${s.attack.zero - s.attack.recycle},${s.attack.plus},${s.attack.recycle},${formatValue('attack', s.attack.value)},` +
       `${s.pass.minus},${s.pass.zero},${s.pass.plus},${formatValue('pass', s.pass.value)},` +
       `${s.set.total},${s.set.plus},${formatValue('set', s.set.value)}\n`;
     st.players.forEach(ps => {

@@ -56,8 +56,9 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
     setPending({ ...r, step, actions, history: [...r.history, { step: r.step, actionCount: r.actions.length }] });
   };
 
-  const stat = (r: PendingRally, playerId: string, skill: Skill, grade: Grade, point: TeamSide | null): StatEvent => ({
+  const stat = (r: PendingRally, playerId: string, skill: Skill, grade: Grade, point: TeamSide | null, recycle = false): StatEvent => ({
     kind: 'stat', id: uid('e'), rallyId: r.id, set: setNum, playerId, skill, grade, point, timestamp: Date.now(),
+    ...(recycle ? { recycle: true } : {}),
   });
 
   const endWithPoint = (r: PendingRally, team: TeamSide, reason: PointReason, extra: StatEvent[] = [], msg = '') => {
@@ -92,6 +93,20 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
       if (grade === 'minus') return commitRally([...rally.actions, ...setEv, stat(rally, selected, 'attack', 'minus', 'opponent')], `${who} attack error · +1 them`);
       return advance(rally, 'opp_attack', [...rally.actions, ...setEv, stat(rally, selected, 'attack', 'zero', null)]);
     }
+  };
+
+  // Opponent recycle: ball stays on their side, they attack again
+  const handleOppRecycle = () => {
+    if (!rally || rally.step !== 'opp_attack') return;
+    advance(rally, 'opp_attack', rally.actions);
+  };
+
+  // Recycle: attempt like a 0, but the ball stays on our side, so our attack again
+  const handleRecycle = () => {
+    if (!rally || !selected || rally.step !== 'our_attack') return;
+    const setterId = setterFor(gameState, selected);
+    const setEv = setterId ? [stat(rally, setterId, 'set', 'zero', null)] : [];
+    advance(rally, 'our_attack', [...rally.actions, ...setEv, stat(rally, selected, 'attack', 'zero', null, true)]);
   };
 
   const handleOppAttack = (grade: Grade) => {
@@ -150,7 +165,7 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
   const crumbs: string[] = [];
   if (rally) {
     crumbs.push(rally.servingTeam === 'own' ? 'We serve' : 'They serve');
-    rally.actions.filter(a => a.skill !== 'set').forEach(a => crumbs.push(`${nameOf(a.playerId)} ${a.skill} ${GRADE_LABEL[a.grade]}`));
+    rally.actions.filter(a => a.skill !== 'set').forEach(a => crumbs.push(`${nameOf(a.playerId)} ${a.skill} ${a.recycle ? 'recycle' : GRADE_LABEL[a.grade]}`));
   }
 
   return (
@@ -199,26 +214,42 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
             )}
 
             {rally.step === 'opp_attack' ? (
-              <div className="grid gap-2">
-                <button onClick={() => handleOppAttack('minus')}
-                  className="py-5 rounded-2xl bg-primary text-black font-black uppercase active:scale-95 transition-all">
-                  Error <span className="block text-[10px] opacity-60 mt-0.5">+1 us</span>
-                </button>
-                <button onClick={() => handleOppAttack('zero')}
-                  className="py-5 rounded-2xl bg-white/10 border border-white/20 text-white font-black uppercase active:scale-95 transition-all">
-                  0 <span className="block text-[10px] opacity-60 mt-0.5">Our attack next</span>
-                </button>
-                <button onClick={() => handleOppAttack('plus')}
-                  className="py-5 rounded-2xl bg-secondary text-black font-black uppercase active:scale-95 transition-all">
-                  Kill <span className="block text-[10px] opacity-60 mt-0.5">+1 them</span>
-                </button>
+              <div className="grid grid-cols-4 gap-2">
+                {([
+                  ['−', 'Error', '+1 us', 'bg-danger text-white', () => handleOppAttack('minus')],
+                  ['↺', 'Recycle', 'Their attack', 'bg-accent text-black', handleOppRecycle],
+                  ['0', '0', 'Our attack', 'bg-white/10 text-white border border-white/20', () => handleOppAttack('zero')],
+                  ['#', 'Kill', '+1 them', 'bg-success text-black', () => handleOppAttack('plus')],
+                ] as [string, string, string, string, () => void][]).map(([sym, label, sub, cls, fn]) => (
+                  <button key={label} onClick={fn}
+                    className={`py-5 rounded-2xl font-black uppercase transition-all active:scale-90 ${cls}`}>
+                    <span className="block text-2xl leading-none">{sym}</span>
+                    <span className="block text-[10px] tracking-wider mt-1">{label}</span>
+                    <span className="block text-[8px] tracking-wider opacity-70">{sub}</span>
+                  </button>
+                ))}
               </div>
             ) : (
               <>
                 {playerGrid(rally.step)}
                 {rally.step === 'our_serve' && gradeButtons(['Error', 'In play', 'Ace'])}
                 {rally.step === 'opp_serve' && gradeButtons(['Aced · +1 them', 'OK', 'Perfect'])}
-                {rally.step === 'our_attack' && gradeButtons(['Error / block', 'In play', 'Kill'])}
+                {rally.step === 'our_attack' && (
+                  <div className="grid grid-cols-4 gap-2">
+                    {([
+                      ['−', 'Error', 'bg-danger text-white', () => handleGrade('minus')],
+                      ['↺', 'Recycle', 'bg-accent text-black', handleRecycle],
+                      ['0', 'In play', 'bg-white/10 text-white border border-white/20', () => handleGrade('zero')],
+                      ['#', 'Kill', 'bg-success text-black', () => handleGrade('plus')],
+                    ] as [string, string, string, () => void][]).map(([sym, label, cls, fn]) => (
+                      <button key={label} onClick={fn} disabled={!selected}
+                        className={`py-5 rounded-2xl font-black uppercase transition-all active:scale-90 disabled:opacity-25 ${cls}`}>
+                        <span className="block text-2xl leading-none">{sym}</span>
+                        <span className="block text-[9px] tracking-wider mt-1 opacity-80">{label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {!selected && <p className="text-[10px] text-white/30 text-center uppercase tracking-wider">Pick a player, then rate</p>}
               </>
             )}

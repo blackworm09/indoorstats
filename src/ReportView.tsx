@@ -16,8 +16,10 @@ function SkillBlock({ skill, line }: { skill: Skill; line: SkillLine }) {
         <span className="text-[9px] font-bold uppercase tracking-widest text-white/40">{SKILL_LABEL[skill]}</span>
         <span className={`text-base font-black italic ${valueTone(skill, line.value)}`}>{formatValue(skill, line.value)}</span>
       </div>
-      <div className="grid grid-cols-3 gap-1 text-center">
-        {([['−', line.minus, 'text-danger'], ['0', line.zero, 'text-white/70'], ['#', line.plus, 'text-success']] as [string, number, string][]).map(([sym, n, tone]) => (
+      <div className={`grid gap-1 text-center ${skill === 'attack' ? 'grid-cols-4' : 'grid-cols-3'}`}>
+        {(skill === 'attack'
+          ? [['−', line.minus, 'text-danger'], ['↺', line.recycle, 'text-accent'], ['0', line.zero - line.recycle, 'text-white/70'], ['#', line.plus, 'text-success']]
+          : [['−', line.minus, 'text-danger'], ['0', line.zero, 'text-white/70'], ['#', line.plus, 'text-success']] as [string, number, string][]).map(([sym, n, tone]) => (
           <div key={sym} className="bg-black/20 rounded-md py-1">
             <div className={`text-[10px] font-black leading-none ${tone}`}>{sym}</div>
             <div className="text-sm font-mono font-bold leading-tight mt-0.5">{n}</div>
@@ -86,7 +88,7 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {(['serve', 'attack', 'pass', 'set'] as Skill[]).map(s => <SkillBlock key={s} skill={s} line={stats.team[s]} />)}
         </div>
-        <p className="text-[10px] text-white/30">Serve, attack, pass: efficiency (# − −) / total. Assist: kills set / attack attempts set (− 0 # = how those attacks ended).</p>
+        <p className="text-[10px] text-white/30">Serve, attack, pass: efficiency (# − −) / total. Recycles (↺) count as attack attempts. Assist: kills set / attack attempts set (− 0 # = how those attacks ended).</p>
       </div>
 
       {/* Opponent */}
