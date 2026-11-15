@@ -112,18 +112,9 @@ export function pointLog(state: GameState): PointLog[] {
   return out;
 }
 
-// Base lineup for a new set: last set's starting lineup (or the template), first serve unset
+// Set 1 starts empty. Later sets start from the previous set's lineup (first serve unset).
 export function defaultLineup(state: GameState, set: number): SetLineup {
-  const prev = state.lineups?.[set - 1] ?? state.templateLineup;
+  const prev = set > 1 ? state.lineups?.[set - 1] : undefined;
   if (prev) return { ...prev, positions: [...prev.positions], liberoReplaces: [...prev.liberoReplaces], firstServe: null };
-  // Legacy saves: use players marked on court
-  const court = state.players.filter(p => p.onCourt && p.role !== 'libero').slice(0, 6).map(p => p.id);
-  while (court.length < 6) court.push(null as unknown as string);
-  const libero = state.players.find(p => p.onCourt && p.role === 'libero') ?? null;
-  return {
-    positions: court,
-    liberoId: libero?.id ?? null,
-    liberoReplaces: state.players.filter(p => court.includes(p.id) && p.role === 'middle').map(p => p.id),
-    firstServe: null,
-  };
+  return { positions: [null, null, null, null, null, null], liberoId: null, liberoReplaces: [], firstServe: null };
 }
