@@ -3,9 +3,11 @@ import { motion, AnimatePresence } from 'motion/react';
 import { ArrowLeftRight, RotateCcw, X } from 'lucide-react';
 import {
   GameState, Grade, MatchEvent, PendingRally, Player, PointReason, RallyStep, Skill, StatEvent, TeamSide,
-  GRADE_LABEL, ROLE_LABEL,
+  GRADE_LABEL, ROLE_LABEL, ROLE_SHORT, COURT_LAYOUT,
 } from './types';
-import { currentSetNumber, lastPointWinner, playerLabel, setterFor, subsUsed, suggestedServer } from './utils';
+import { currentSetNumber, playerLabel, setterFor, subsUsed } from './utils';
+import { CourtState, positionOf } from './court';
+import { CourtMini } from './Lineup';
 
 interface RallyViewProps {
   gameState: GameState;
@@ -14,6 +16,8 @@ interface RallyViewProps {
   onSub: (inId: string, outId: string) => void;
   onUndo: () => void;
   canUndo: boolean;
+  court: CourtState;
+  onOpenLineup: () => void;
 }
 
 const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -25,26 +29,22 @@ const STEP_TITLE: Record<RallyStep, string> = {
   opp_attack: 'Opponent attack',
 };
 
-export default function RallyView({ gameState, setPending, commitRally, onSub, onUndo, canUndo }: RallyViewProps) {
+export default function RallyView({ gameState, setPending, commitRally, onSub, onUndo, canUndo, court, onOpenLineup }: RallyViewProps) {
   const setNum = currentSetNumber(gameState);
-  const indexed = gameState.players.map((p, i) => ({ p, i }));
-  const court = indexed.filter(x => x.p.onCourt);
-  const lastWinner = lastPointWinner(gameState.events, setNum);
 
-  // Current rally: stored pending rally, or a fresh one served by the last point winner
+  // Current rally: stored pending rally, or a fresh one served by whoever serves next
   const stored = gameState.pending && gameState.pending.set === setNum ? gameState.pending : null;
-  const rally: PendingRally | null = stored ?? (lastWinner ? { ...freshRally(lastWinner, setNum), id: `r-${setNum}-${gameState.events.length}` } : null);
+  const rally: PendingRally | null = stored ?? (court.serving ? { ...freshRally(court.serving, setNum), id: `r-${setNum}-${gameState.events.length}` } : null);
 
   const [selected, setSelected] = useState<string | null>(null);
   const [showSubs, setShowSubs] = useState(false);
 
-  const serverSuggestion = rally?.step === 'our_serve' && rally.actions.length === 0 ? suggestedServer(gameState.events, setNum) : null;
+  // Server = whoever stands in P1
+  const serverSuggestion = rally?.step === 'our_serve' ? court.display[0] : null;
 
-  // Reset selection when the step changes; preselect the server who keeps serving
   const stepKey = rally ? `${rally.id}-${rally.step}-${rally.actions.length}-${rally.history.length}` : 'none';
   useEffect(() => {
-    setSelected(serverSuggestion && court.some(c => c.p.id === serverSuggestion) ? serverSuggestion : null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setSelected(serverSuggestion ?? null);
   }, [stepKey, serverSuggestion]);
 
   const nameOf = (id: string) => {
@@ -58,6 +58,7 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
 
   const stat = (r: PendingRally, playerId: string, skill: Skill, grade: Grade, point: TeamSide | null, recycle = false): StatEvent => ({
     kind: 'stat', id: uid('e'), rallyId: r.id, set: setNum, playerId, skill, grade, point, timestamp: Date.now(),
+    pos: positionOf(court, playerId) ?? undefined, rot: court.rotation ?? undefined,
     ...(recycle ? { recycle: true } : {}),
   });
 
@@ -122,10 +123,10 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
   };
 
   // Eligible players per step
-  const eligible = (step: RallyStep) => court.filter(({ p }) =>
+  const isEligible = (step: RallyStep, p: Player) =>
     step === 'our_serve' ? p.role !== 'libero' :
     step === 'opp_serve' ? p.role !== 'setter' :
-    step === 'our_attack' ? p.role !== 'libero' : false);
+    step === 'our_attack' ? p.role !== 'libero' : false;
 
   const used = subsUsed(gameState.events, setNum);
 
@@ -143,23 +144,31 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
     </div>
   );
 
-  const playerGrid = (step: RallyStep) => {
-    const list = eligible(step);
-    if (list.length === 0) return <div className="text-xs text-white/30 border border-dashed border-white/10 rounded-xl p-4 text-center">No eligible players on court. Check the lineup.</div>;
-    return (
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-        {list.map(({ p, i }) => (
-          <button key={p.id} onClick={() => setSelected(p.id)}
-            className={`min-h-[56px] rounded-2xl px-3 py-2 text-left border-2 transition-all active:scale-95 ${
-              selected === p.id ? 'border-primary bg-primary/15' : 'border-white/10 bg-white/5'
-            }`}>
-            <span className={`block font-black italic uppercase leading-none text-base truncate ${selected === p.id ? 'text-primary' : ''}`}>{playerLabel(p, i)}</span>
-            <span className="block text-[9px] font-bold uppercase tracking-wider text-white/30 mt-1">{ROLE_LABEL[p.role]}</span>
-          </button>
-        ))}
-      </div>
-    );
-  };
+  // Players laid out like the court: front row P4 P3 P2, back row P5 P6 P1
+  const playerGrid = (step: RallyStep) => (
+    <div className="space-y-2">
+      {COURT_LAYOUT.map((row, r) => (
+        <div key={r} className="grid grid-cols-3 gap-2">
+          {row.map(pos => {
+            const id = court.display[pos - 1];
+            const i = gameState.players.findIndex(p => p.id === id);
+            const p = i >= 0 ? gameState.players[i] : null;
+            const ok = p ? isEligible(step, p) : false;
+            return (
+              <button key={pos} onClick={() => p && ok && setSelected(p.id)} disabled={!ok}
+                className={`min-h-[60px] rounded-2xl px-2.5 py-2 text-left border-2 transition-all active:scale-95 disabled:opacity-20 ${
+                  p && selected === p.id ? 'border-primary bg-primary/15' : p?.role === 'libero' ? 'border-accent/30 bg-accent/5' : 'border-white/10 bg-white/5'
+                }`}>
+                <span className="block text-[9px] font-mono font-bold text-white/30">P{pos}</span>
+                <span className={`block font-black italic uppercase leading-tight text-sm truncate ${p && selected === p.id ? 'text-primary' : ''}`}>{p ? playerLabel(p, i) : '–'}</span>
+                {p && <span className="block text-[9px] font-bold uppercase tracking-wider text-white/30">{ROLE_SHORT[p.role]}</span>}
+              </button>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
 
   // Breadcrumb of the rally so far
   const crumbs: string[] = [];
@@ -182,6 +191,8 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
         </button>
       </div>
 
+      <CourtMini players={gameState.players} court={court} onOpen={onOpenLineup} />
+
       {/* Breadcrumb */}
       {crumbs.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
@@ -195,12 +206,9 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
 
       <AnimatePresence mode="wait">
         {!rally ? (
-          <motion.div key="choose" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="flex-1 flex flex-col justify-center gap-3">
-            <h3 className="text-xs font-bold text-white/30 uppercase tracking-widest text-center">Set {setNum} · who serves first?</h3>
-            <button onClick={() => setPending(freshRally('own', setNum))}
-              className="h-28 rounded-2xl bg-primary text-black font-black uppercase italic tracking-tighter text-3xl active:scale-95 transition-all">We serve</button>
-            <button onClick={() => setPending(freshRally('opponent', setNum))}
-              className="h-28 rounded-2xl bg-secondary text-black font-black uppercase italic tracking-tighter text-3xl active:scale-95 transition-all">They serve</button>
+          <motion.div key="nolineup" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex-1 flex flex-col justify-center gap-3">
+            <button onClick={onOpenLineup}
+              className="h-28 rounded-2xl bg-primary text-black font-black uppercase italic tracking-tighter text-2xl active:scale-95 transition-all">Set lineup for set {setNum}</button>
           </motion.div>
         ) : (
           <motion.div key={stepKey} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-4">
@@ -271,7 +279,7 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
 
       {/* SUB SHEET */}
       <AnimatePresence>
-        {showSubs && <SubSheet players={gameState.players} onClose={() => setShowSubs(false)} onSub={onSub} used={used} limit={gameState.subLimit} />}
+        {showSubs && <SubSheet players={gameState.players} courtIds={court.positions} onClose={() => setShowSubs(false)} onSub={onSub} used={used} limit={gameState.subLimit} />}
       </AnimatePresence>
     </div>
   );
@@ -285,13 +293,14 @@ export function freshRally(servingTeam: TeamSide, set: number): PendingRally {
   };
 }
 
-function SubSheet({ players, onClose, onSub, used, limit }: {
-  players: Player[]; onClose: () => void; onSub: (inId: string, outId: string) => void; used: number; limit: number;
+function SubSheet({ players, courtIds, onClose, onSub, used, limit }: {
+  players: Player[]; courtIds: (string | null)[]; onClose: () => void; onSub: (inId: string, outId: string) => void; used: number; limit: number;
 }) {
   const [outId, setOutId] = useState<string | null>(null);
-  const indexed = players.map((p, i) => ({ p, i }));
-  const court = indexed.filter(x => x.p.onCourt);
-  const bench = indexed.filter(x => !x.p.onCourt);
+  // Liberos swap automatically, so they're not part of regular subs
+  const indexed = players.map((p, i) => ({ p, i })).filter(x => x.p.role !== 'libero');
+  const court = courtIds.map((id, k) => ({ id, pos: k + 1 })).filter(x => x.id).map(x => ({ ...indexed.find(y => y.p.id === x.id)!, pos: x.pos })).filter(x => x.p);
+  const bench = indexed.filter(x => !courtIds.includes(x.p.id));
   const btn = (p: Player, i: number, active: boolean, onClick: () => void, disabled = false) => (
     <button key={p.id} onClick={onClick} disabled={disabled}
       className={`w-full text-left px-3 py-2.5 rounded-xl border-2 transition-all active:scale-95 disabled:opacity-30 ${active ? 'border-primary bg-primary/15' : 'border-white/10 bg-white/5'}`}>
@@ -314,7 +323,7 @@ function SubSheet({ players, onClose, onSub, used, limit }: {
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-2">
             <div className="text-[10px] uppercase tracking-widest font-bold text-white/30">Out (court)</div>
-            {court.map(({ p, i }) => btn(p, i, outId === p.id, () => setOutId(outId === p.id ? null : p.id)))}
+            {court.map(({ p, i, pos }) => <div key={p.id} className="relative">{btn(p, i, outId === p.id, () => setOutId(outId === p.id ? null : p.id))}<span className="absolute top-2 right-2 text-[9px] font-mono text-white/30">P{pos}</span></div>)}
           </div>
           <div className="space-y-2">
             <div className="text-[10px] uppercase tracking-widest font-bold text-white/30">In (bench)</div>

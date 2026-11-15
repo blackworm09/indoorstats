@@ -1,23 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, BarChart3, Settings, XCircle, Trophy, Plus, Trash2, Minus, Zap, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { GameState, Grade, MatchEvent, PendingRally, Player, PointReason, Role, Skill, TeamSide, TrackMode, GRADE_LABEL, SKILL_LABEL, ROLE_LABEL, POINT_REASONS } from './types';
+import { GameState, Grade, MatchEvent, PendingRally, Player, PointReason, Role, Skill, TeamSide, TrackMode, GRADE_LABEL, SKILL_LABEL, ROLE_LABEL, ROLE_SHORT, ROLES, POINT_REASONS, SetLineup } from './types';
 import {
   autoPointFor, calculateStats, currentSetNumber, formatMatchDate, getSetLimit, isSetWon,
-  playerLabel, scoreForSet, SETS_TO_WIN, formatValue, detectTrends, setterFor,
+  playerLabel, scoreForSet, SETS_TO_WIN, formatValue, detectTrends, setterFor, rotationTable, statsByPosition,
 } from './utils';
 import TrackingView from './TrackingView';
 import RallyView from './RallyView';
 import ReportView from './ReportView';
+import { courtState, defaultLineup, positionOf } from './court';
+import { LineupSheet } from './Lineup';
 
 const MATCH_KEY = 'indoorstats_match';
 const ROSTER_KEY = 'indoorstats_roster';
 
 const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
+// First 6 fill P1..P6 of the default lineup (S, OH, MB, OPP, OH, MB), then libero, then bench
 const DEFAULT_ROLES: [Role, boolean][] = [
-  ['setter', true], ['hitter', true], ['hitter', true], ['hitter', true], ['hitter', true], ['hitter', true], ['libero', true],
-  ['setter', false], ['hitter', false], ['hitter', false], ['hitter', false], ['hitter', false], ['hitter', false], ['libero', false],
+  ['setter', true], ['outside', true], ['middle', true], ['opposite', true], ['outside', true], ['middle', true], ['libero', true],
+  ['setter', false], ['outside', false], ['middle', false], ['opposite', false], ['outside', false], ['middle', false], ['libero', false],
 ];
 
 const defaultRoster = (): Player[] =>
@@ -35,6 +38,8 @@ function freshState(players: Player[]): GameState {
     subLimit: 8,
     mode: 'rally',
     pending: null,
+    lineups: {},
+    templateLineup: null,
   };
 }
 
@@ -44,18 +49,22 @@ const ROSTER_SIZE = 14;
 function padRoster(players: Player[]): Player[] {
   const withSlots = players.map((p, i) => ({ ...p, slot: p.slot ?? i + 1 }));
   const extra = Math.max(0, ROSTER_SIZE - players.length);
-  return [...withSlots, ...Array.from({ length: extra }, (_, k) => ({ id: uid('p'), name: '', number: '', role: 'hitter' as Role, onCourt: false, slot: players.length + k + 1 }))];
+  return [...withSlots, ...Array.from({ length: extra }, (_, k) => ({ id: uid('p'), name: '', number: '', role: 'outside' as Role, onCourt: false, slot: players.length + k + 1 }))];
 }
+
+// Pre-rotation saves used a single 'hitter' role
+const migrateRoles = (players: Player[]): Player[] =>
+  players.map(p => ((p.role as string) === 'hitter' ? { ...p, role: 'outside' as Role } : p));
 
 function loadState(): GameState {
   try {
     const saved = localStorage.getItem(MATCH_KEY);
     if (saved) {
       const s: GameState = { ...freshState(defaultRoster()), ...JSON.parse(saved) };
-      return { ...s, players: padRoster(s.players) };
+      return { ...s, players: padRoster(migrateRoles(s.players)), lineups: s.lineups ?? {} };
     }
     const roster = localStorage.getItem(ROSTER_KEY);
-    if (roster) return freshState(padRoster(JSON.parse(roster)));
+    if (roster) return freshState(padRoster(migrateRoles(JSON.parse(roster))));
   } catch { /* ignore */ }
   return freshState(defaultRoster());
 }
@@ -70,6 +79,7 @@ export default function App() {
   const [confirmState, setConfirmState] = useState<ConfirmState>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [showTrends, setShowTrends] = useState(false);
+  const [showLineup, setShowLineup] = useState(false);
   const feedbackTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -85,6 +95,24 @@ export default function App() {
   const matchOver = gameState.sets.own >= SETS_TO_WIN || gameState.sets.opponent >= SETS_TO_WIN;
   const currentSetEvents = gameState.events.filter(e => e.set === setNum);
   const trends = useMemo(() => detectTrends(gameState), [gameState]);
+  const court = useMemo(() => courtState(gameState, setNum), [gameState, setNum]);
+  const needsLineup = !court.hasLineup && !matchOver;
+
+  // New set without a lineup: open the lineup screen (after the roster is closed)
+  useEffect(() => {
+    if (needsLineup && !showConfig && view === 'track') setShowLineup(true);
+  }, [needsLineup, showConfig, view]);
+
+  const saveLineup = (lineup: SetLineup) => {
+    setGameState(prev => ({ ...prev, lineups: { ...prev.lineups, [setNum]: lineup }, templateLineup: lineup, pending: null }));
+    setShowLineup(false);
+    flash(`Set ${setNum} lineup saved`);
+  };
+
+  const rotateCourt = (delta: number) => {
+    pushEvent({ kind: 'rotate', id: uid('e'), set: setNum, delta, timestamp: Date.now() });
+    flash(delta > 0 ? 'Rotated forward' : 'Rotated back');
+  };
 
   // Set end detection
   useEffect(() => {
@@ -110,8 +138,9 @@ export default function App() {
     const groupId = setterId ? uid('q') : undefined;
     const ts = Date.now();
     const newEvents: MatchEvent[] = [];
-    if (setterId) newEvents.push({ kind: 'stat', id: uid('e'), rallyId: groupId, set: setNum, playerId: setterId, skill: 'set', grade, point: null, timestamp: ts });
-    newEvents.push({ kind: 'stat', id: uid('e'), rallyId: groupId, set: setNum, playerId, skill, grade, point, timestamp: ts, ...(recycle ? { recycle: true } : {}) });
+    const tag = (id: string) => ({ pos: positionOf(court, id) ?? undefined, rot: court.rotation ?? undefined });
+    if (setterId) newEvents.push({ kind: 'stat', id: uid('e'), rallyId: groupId, set: setNum, playerId: setterId, skill: 'set', grade, point: null, timestamp: ts, ...tag(setterId) });
+    newEvents.push({ kind: 'stat', id: uid('e'), rallyId: groupId, set: setNum, playerId, skill, grade, point, timestamp: ts, ...tag(playerId), ...(recycle ? { recycle: true } : {}) });
     setGameState(prev => ({ ...prev, events: [...prev.events, ...newEvents] }));
     const p = gameState.players.find(pp => pp.id === playerId);
     const idx = gameState.players.findIndex(pp => pp.id === playerId);
@@ -125,27 +154,14 @@ export default function App() {
     flash(`${label ? label + ' · ' : ''}${team === 'own' ? '+1 us' : '+1 them'}`);
   };
 
-  // Incoming player takes the outgoing player's slot
-  const swapPlayers = (players: Player[], inId: string, outId: string): Player[] => {
-    const next = players.map(p => ({ ...p }));
-    const a = next.findIndex(p => p.id === inId);
-    const b = next.findIndex(p => p.id === outId);
-    if (a < 0 || b < 0) return players;
-    const inOnCourt = next[a].onCourt;
-    next[a].onCourt = next[b].onCourt;
-    next[b].onCourt = inOnCourt;
-    [next[a], next[b]] = [next[b], next[a]];
-    return next;
-  };
-
   const handleSub = (inId: string, outId: string) => {
     const inP = gameState.players.find(p => p.id === inId);
     const outP = gameState.players.find(p => p.id === outId);
     if (!inP || !outP) return;
     const counts = inP.role !== 'libero' && outP.role !== 'libero';
+    // Incoming player takes the outgoing player's court position (see court.ts replay)
     setGameState(prev => ({
       ...prev,
-      players: swapPlayers(prev.players, inId, outId),
       events: [...prev.events, { kind: 'sub', id: uid('e'), set: setNum, inId, outId, counts, timestamp: Date.now() }],
     }));
     flash(`${playerLabel(inP)} in · ${playerLabel(outP)} out`);
@@ -164,17 +180,14 @@ export default function App() {
       for (let i = prev.events.length - 1; i >= 0; i--) {
         if (prev.events[i].set === s) { lastIdx = i; break; }
       }
-      if (lastIdx < 0) {
-        // Nothing scored yet: back to "who serves first?"
-        return p ? { ...prev, pending: null } : prev;
-      }
+      if (lastIdx < 0) return p ? { ...prev, pending: null } : prev;
       const last = prev.events[lastIdx];
       // A whole rally comes off together
       const events = last.rallyId
         ? prev.events.filter(e => e.rallyId !== last.rallyId)
         : prev.events.filter((_, i) => i !== lastIdx);
-      const players = last.kind === 'sub' ? swapPlayers(prev.players, last.outId, last.inId) : prev.players;
-      return { ...prev, events, players, pending: last.kind === 'sub' ? prev.pending : null };
+      const keepPending = last.kind === 'sub' || last.kind === 'rotate';
+      return { ...prev, events, pending: keepPending ? prev.pending : null };
     });
     flash('Undone');
   };
@@ -192,7 +205,7 @@ export default function App() {
       const s = currentSetNumber(prev);
       const sc = scoreForSet(prev.events, s);
       const sets = { ...prev.sets, [winner]: prev.sets[winner] + 1 };
-      return { ...prev, sets, setHistory: [...prev.setHistory, sc], pending: null };
+      return { ...prev, sets, setHistory: [...prev.setHistory, sc], pending: null, templateLineup: prev.lineups[s] ?? prev.templateLineup };
     });
     setSetEndWinner(null);
     const newWins = gameState.sets[winner] + 1;
@@ -222,6 +235,7 @@ export default function App() {
           autoScore: prev.autoScore,
           subLimit: prev.subLimit,
           mode: prev.mode,
+          templateLineup: prev.lineups[1] ?? prev.templateLineup ?? null,
         }));
         setView('track');
         setShowConfig(true);
@@ -248,6 +262,16 @@ export default function App() {
       csv += line(playerLabel(ps.player, idx), ROLE_LABEL[ps.player.role], ps);
     });
     csv += line('TEAM', '', st.team);
+    csv += `\nBY ROTATION\nRotation,Won,Lost,Side-out won,Side-out total,Break won,Break total\n`;
+    rotationTable(gameState, null).forEach(r => { csv += `R${r.rotation},${r.won},${r.lost},${r.soWon},${r.soTotal},${r.bpWon},${r.bpTotal}\n`; });
+    csv += `\nBY POSITION\nPlayer,Position,Serve Eff,Serve n,Attack Eff,Attack n,Pass Eff,Pass n\n`;
+    gameState.players.forEach((pl, idx) => {
+      const bp = statsByPosition(gameState, pl.id, null);
+      Object.keys(bp).map(Number).sort().forEach(pos => {
+        const b = bp[pos];
+        csv += `${playerLabel(pl, idx)},P${pos},${formatValue('serve', b.serve.value)},${b.serve.total},${formatValue('attack', b.attack.value)},${b.attack.total},${formatValue('pass', b.pass.value)},${b.pass.total}\n`;
+      });
+    });
     const o = st.opponent;
     csv += `\nOPPONENT\nAttack points,${o.opp_attack_point}\nAces,${o.opp_ace}\nAttack mistakes,${o.opp_attack_error}\nService mistakes,${o.opp_serve_error}\nOther points us,${o.other_us}\nOther points them,${o.other_them}\n`;
     const subject = encodeURIComponent(`IndoorStats Match Report - vs ${opp} - ${date}`);
@@ -258,7 +282,7 @@ export default function App() {
   const updatePlayer = (id: string, patch: Partial<Player>) =>
     setGameState(prev => ({ ...prev, players: prev.players.map(p => (p.id === id ? { ...p, ...patch } : p)) }));
   const addPlayer = () =>
-    setGameState(prev => ({ ...prev, players: [...prev.players, { id: uid('p'), name: '', number: '', role: 'hitter', onCourt: false, slot: Math.max(0, ...prev.players.map(p => p.slot ?? 0)) + 1 }] }));
+    setGameState(prev => ({ ...prev, players: [...prev.players, { id: uid('p'), name: '', number: '', role: 'outside', onCourt: false, slot: Math.max(0, ...prev.players.map(p => p.slot ?? 0)) + 1 }] }));
   const removePlayer = (id: string) => {
     const hasStats = gameState.events.some(e => (e.kind === 'stat' && e.playerId === id) || (e.kind === 'sub' && (e.inId === id || e.outId === id)));
     const doRemove = () => setGameState(prev => ({ ...prev, players: prev.players.filter(p => p.id !== id) }));
@@ -267,7 +291,6 @@ export default function App() {
     } else doRemove();
   };
 
-  const onCourtCount = gameState.players.filter(p => p.onCourt).length;
 
   return (
     <div className="min-h-screen min-h-[100dvh] flex flex-col font-sans selection:bg-primary selection:text-black">
@@ -333,6 +356,8 @@ export default function App() {
                 onSub={handleSub}
                 onUndo={handleUndo}
                 canUndo={currentSetEvents.length > 0 || !!(gameState.pending && gameState.pending.set === setNum)}
+                court={court}
+                onOpenLineup={() => setShowLineup(true)}
               />
             ) : (
               <TrackingView
@@ -343,6 +368,8 @@ export default function App() {
                 onUndo={handleUndo}
                 canUndo={currentSetEvents.length > 0}
                 feedback={feedback}
+                court={court}
+                onOpenLineup={() => setShowLineup(true)}
               />
             )}
           </div>
@@ -441,6 +468,23 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* LINEUP SHEET */}
+      <AnimatePresence>
+        {showLineup && !matchOver && (
+          <LineupSheet
+            key={`lineup-${setNum}`}
+            players={gameState.players}
+            setNum={setNum}
+            initial={gameState.lineups[setNum] ?? defaultLineup(gameState, setNum)}
+            court={court.hasLineup ? court : null}
+            setInProgress={currentSetEvents.length > 0}
+            onSave={saveLineup}
+            onRotate={rotateCourt}
+            onClose={court.hasLineup ? () => setShowLineup(false) : null}
+          />
+        )}
+      </AnimatePresence>
+
       {/* CONFIRM MODAL */}
       <AnimatePresence>
         {confirmState && (
@@ -471,7 +515,7 @@ export default function App() {
                 <div>
                   <h3 className="text-2xl sm:text-3xl font-black italic uppercase tracking-tighter text-primary">Roster</h3>
                   <p className="text-[10px] opacity-50 uppercase tracking-widest mt-1 font-mono">
-                    {onCourtCount} on court · {gameState.players.length - onCourtCount} bench
+                    {gameState.players.length} players · OH outside · MB middle · OPP opposite · S setter · L libero
                   </p>
                 </div>
                 <button onClick={() => setShowConfig(false)} className="p-2 hover:bg-white/10 rounded-full"><XCircle className="w-6 h-6" /></button>
@@ -484,7 +528,7 @@ export default function App() {
 
               <div className="space-y-2">
                 {gameState.players.map((p, idx) => (
-                  <div key={p.id} className={`rounded-xl border p-2 space-y-2 ${p.onCourt ? 'border-primary/30 bg-primary/5' : 'border-white/10 bg-white/[0.02]'}`}>
+                  <div key={p.id} className="rounded-xl border border-white/10 bg-white/[0.02] p-2 space-y-2">
                     <div className="flex gap-2">
                       <input type="text" inputMode="numeric" value={p.number} maxLength={3}
                         onChange={e => updatePlayer(p.id, { number: e.target.value.replace(/[^0-9]/g, '') })}
@@ -497,19 +541,13 @@ export default function App() {
                       <button onClick={() => removePlayer(p.id)} aria-label="Remove player"
                         className="p-2 text-white/30 hover:text-danger rounded-lg"><Trash2 className="w-4 h-4" /></button>
                     </div>
-                    <div className="flex gap-2">
-                      <div className="flex-1 flex gap-1 p-0.5 bg-white/5 rounded-lg">
-                        {(['hitter', 'setter', 'libero'] as Role[]).map(r => (
-                          <button key={r} onClick={() => updatePlayer(p.id, { role: r })}
-                            className={`flex-1 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all ${p.role === r ? 'bg-white text-black' : 'text-white/40'}`}>
-                            {ROLE_LABEL[r]}
-                          </button>
-                        ))}
-                      </div>
-                      <button onClick={() => updatePlayer(p.id, { onCourt: !p.onCourt })}
-                        className={`px-3 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all ${p.onCourt ? 'bg-primary text-black border-primary' : 'text-white/40 border-white/10'}`}>
-                        {p.onCourt ? 'Court' : 'Bench'}
-                      </button>
+                    <div className="flex gap-1 p-0.5 bg-white/5 rounded-lg">
+                      {ROLES.map(r => (
+                        <button key={r} onClick={() => updatePlayer(p.id, { role: r })}
+                          className={`flex-1 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all ${p.role === r ? 'bg-white text-black' : 'text-white/40'}`}>
+                          {ROLE_SHORT[r]}
+                        </button>
+                      ))}
                     </div>
                   </div>
                 ))}

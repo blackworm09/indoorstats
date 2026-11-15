@@ -1,4 +1,5 @@
 import { GameState, Grade, MatchEvent, Player, Skill, StatEvent, TeamSide } from './types';
+import { courtState, pointLog } from './court';
 
 // Indoor: sets 1-4 to 25, set 5 to 15, win by 2, best of 5
 export function getSetLimit(setNumber: number): number {
@@ -296,9 +297,10 @@ export function suggestedServer(events: MatchEvent[], set: number): string | nul
 // ---------- Setter assists ----------
 // The setter on court gets the credit for a teammate's attack. No credit when she attacks herself.
 export function setterFor(state: GameState, attackerId: string): string | null {
-  const setter = state.players.find(p => p.onCourt && p.role === 'setter');
-  if (!setter || setter.id === attackerId) return null;
-  return setter.id;
+  const court = courtState(state, currentSetNumber(state));
+  const setterId = court.positions.find(id => id && state.players.find(p => p.id === id)?.role === 'setter') ?? null;
+  if (!setterId || setterId === attackerId) return null;
+  return setterId;
 }
 
 // Recycles per player (for the quick-tap button badge)
@@ -306,4 +308,36 @@ export function recyclesByPlayer(events: MatchEvent[]) {
   const map: Record<string, number> = {};
   events.forEach(e => { if (e.kind === 'stat' && e.recycle) map[e.playerId] = (map[e.playerId] ?? 0) + 1; });
   return map;
+}
+
+// ---------- Rotation report ----------
+
+export interface RotationRow { rotation: number; won: number; lost: number; soWon: number; soTotal: number; bpWon: number; bpTotal: number }
+
+export function rotationTable(state: GameState, set: number | null): RotationRow[] {
+  const rows: RotationRow[] = [1, 2, 3, 4, 5, 6].map(r => ({ rotation: r, won: 0, lost: 0, soWon: 0, soTotal: 0, bpWon: 0, bpTotal: 0 }));
+  pointLog(state).forEach(pt => {
+    if (set !== null && pt.set !== set) return;
+    if (!pt.rotation) return;
+    const row = rows[pt.rotation - 1];
+    if (pt.winner === 'own') row.won++; else row.lost++;
+    if (pt.serving === 'opponent') { row.soTotal++; if (pt.winner === 'own') row.soWon++; }
+    if (pt.serving === 'own') { row.bpTotal++; if (pt.winner === 'own') row.bpWon++; }
+  });
+  return rows;
+}
+
+// Per player, per court position: efficiency lines for one skill
+export function statsByPosition(state: GameState, playerId: string, set: number | null) {
+  const out: Record<number, Record<Skill, SkillLine>> = {};
+  state.events.forEach(e => {
+    if (e.kind !== 'stat' || e.playerId !== playerId || !e.pos) return;
+    if (set !== null && e.set !== set) return;
+    if (!out[e.pos]) out[e.pos] = { serve: emptyLine(), attack: emptyLine(), pass: emptyLine(), set: emptyLine() };
+    const line = out[e.pos][e.skill];
+    line[e.grade]++;
+    if (e.recycle) line.recycle++;
+  });
+  Object.values(out).forEach(bySkill => (Object.keys(bySkill) as Skill[]).forEach(k => finish(bySkill[k], k)));
+  return out;
 }

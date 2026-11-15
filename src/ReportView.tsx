@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { BarChart3, Download, RotateCcw } from 'lucide-react';
 import { GameState, Skill, REPORT_SKILLS_BY_ROLE, SKILL_LABEL, ROLE_LABEL } from './types';
-import { calculateStats, formatMatchDate, formatValue, playerLabel, scoreForSet, valueTone, SkillLine, currentSetNumber } from './utils';
+import { calculateStats, formatMatchDate, formatValue, playerLabel, scoreForSet, valueTone, SkillLine, currentSetNumber, rotationTable, statsByPosition } from './utils';
+
+const pctOf = (a: number, b: number) => (b === 0 ? '–' : `${Math.round((a / b) * 100)}%`);
 
 interface ReportViewProps {
   gameState: GameState;
@@ -37,6 +39,7 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
   const liveScore = scoreForSet(gameState.events, setNum);
   const setsWithData = Array.from(new Set(gameState.events.map(e => e.set))).sort((a, b) => a - b);
   const stats = calculateStats(gameState, setFilter);
+  const rotations = rotationTable(gameState, setFilter);
 
   const rows = stats.players
     .map((ps, idx) => ({ ...ps, idx: gameState.players.findIndex(p => p.id === ps.player.id) }))
@@ -91,6 +94,40 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
         <p className="text-[10px] text-white/30">Serve, attack, pass: efficiency (# − −) / total. Recycles (↺) count as attack attempts. Assist: kills set / attack attempts set (− 0 # = how those attacks ended).</p>
       </div>
 
+      {/* Rotations */}
+      <div className="bg-surface border border-white/10 rounded-2xl p-4 space-y-3">
+        <span className="text-[10px] uppercase font-bold tracking-widest text-primary">By rotation</span>
+        <table className="w-full text-center text-xs">
+          <thead>
+            <tr className="text-[9px] uppercase tracking-wider text-white/40">
+              <th className="text-left font-bold py-1">Rot</th>
+              <th className="font-bold">Won</th>
+              <th className="font-bold">Lost</th>
+              <th className="font-bold">+/−</th>
+              <th className="font-bold">Side-out</th>
+              <th className="font-bold">Break</th>
+            </tr>
+          </thead>
+          <tbody className="font-mono">
+            {rotations.map(r => {
+              const diff = r.won - r.lost;
+              const played = r.won + r.lost > 0;
+              return (
+                <tr key={r.rotation} className={`border-t border-white/5 ${played ? '' : 'opacity-30'}`}>
+                  <td className="text-left font-black py-1.5 font-sans">R{r.rotation}</td>
+                  <td className="text-success">{r.won}</td>
+                  <td className="text-danger">{r.lost}</td>
+                  <td className={diff > 0 ? 'text-success' : diff < 0 ? 'text-danger' : ''}>{diff > 0 ? `+${diff}` : diff}</td>
+                  <td>{pctOf(r.soWon, r.soTotal)} <span className="text-white/30 text-[9px]">{r.soWon}/{r.soTotal}</span></td>
+                  <td>{pctOf(r.bpWon, r.bpTotal)} <span className="text-white/30 text-[9px]">{r.bpWon}/{r.bpTotal}</span></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <p className="text-[10px] text-white/30">Rotation = setter's position (R1 = setter in P1). Side-out: points won when they serve. Break: points won when we serve.</p>
+      </div>
+
       {/* Opponent */}
       <div className="bg-surface border border-white/10 rounded-2xl p-4 space-y-3">
         <span className="text-[10px] uppercase font-bold tracking-widest text-secondary">Opponent</span>
@@ -133,6 +170,7 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
                   <div className={`grid gap-2 ${skills.length === 3 ? 'grid-cols-3' : 'grid-cols-1 max-w-[12rem]'}`}>
                     {skills.map(s => <SkillBlock key={s} skill={s} line={ps[s]} />)}
                   </div>
+                  <ByPosition gameState={gameState} playerId={ps.player.id} skills={skills.filter(s => s !== 'set')} setFilter={setFilter} />
                 </div>
               );
             })}
@@ -156,5 +194,39 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
         </button>
       </div>
     </div>
+  );
+}
+
+function ByPosition({ gameState, playerId, skills, setFilter }: { gameState: GameState; playerId: string; skills: Skill[]; setFilter: number | null }) {
+  const byPos = statsByPosition(gameState, playerId, setFilter);
+  const positions = [1, 2, 3, 4, 5, 6].filter(p => byPos[p] && skills.some(s => byPos[p][s].total > 0));
+  if (positions.length === 0) return null;
+  return (
+    <details className="group">
+      <summary className="text-[10px] font-bold uppercase tracking-widest text-white/40 cursor-pointer select-none py-1">By position ▾</summary>
+      <table className="w-full text-center text-xs mt-1">
+        <thead>
+          <tr className="text-[9px] uppercase tracking-wider text-white/40">
+            <th className="text-left font-bold py-1">Pos</th>
+            {skills.map(s => <th key={s} className="font-bold">{SKILL_LABEL[s]}</th>)}
+          </tr>
+        </thead>
+        <tbody className="font-mono">
+          {positions.map(p => (
+            <tr key={p} className="border-t border-white/5">
+              <td className="text-left font-black py-1 font-sans">P{p}</td>
+              {skills.map(s => {
+                const line = byPos[p][s];
+                return (
+                  <td key={s} className={valueTone(s, line.value)}>
+                    {line.total ? <>{formatValue(s, line.value)} <span className="text-white/30 text-[9px]">({line.total})</span></> : <span className="text-white/20">–</span>}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </details>
   );
 }

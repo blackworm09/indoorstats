@@ -1,5 +1,5 @@
 export type TeamSide = 'own' | 'opponent';
-export type Role = 'hitter' | 'setter' | 'libero';
+export type Role = 'outside' | 'middle' | 'opposite' | 'setter' | 'libero';
 export type Skill = 'serve' | 'attack' | 'pass' | 'set'; // 'set' = setter credit on a teammate's attack
 export type Grade = 'minus' | 'zero' | 'plus'; // shown as − / 0 / #
 
@@ -8,7 +8,7 @@ export interface Player {
   name: string;
   number: string;
   role: Role;
-  onCourt: boolean;
+  onCourt?: boolean; // legacy (pre-rotation saves); court now comes from the set lineup
   slot?: number; // stable placeholder number for unnamed players
 }
 
@@ -21,6 +21,8 @@ export interface StatEvent {
   skill: Skill;
   grade: Grade;
   recycle?: boolean; // attack kept in play on our side (counts as a 0 attempt)
+  pos?: number; // player's court position (1-6) when the stat happened
+  rot?: number; // team rotation (setter's position) when the stat happened
   point: TeamSide | null; // auto-awarded point, if any
   timestamp: number;
 }
@@ -55,7 +57,25 @@ export interface SubEvent {
   timestamp: number;
 }
 
-export type MatchEvent = StatEvent | PointEvent | SubEvent;
+// Manual rotation correction (+1 = one step clockwise, like a side-out)
+export interface RotateEvent {
+  kind: 'rotate';
+  id: string;
+  rallyId?: string;
+  set: number;
+  delta: number;
+  timestamp: number;
+}
+
+export type MatchEvent = StatEvent | PointEvent | SubEvent | RotateEvent;
+
+// Starting lineup for one set. positions[0] = P1 ... positions[5] = P6
+export interface SetLineup {
+  positions: (string | null)[];
+  liberoId: string | null;
+  liberoReplaces: string[];
+  firstServe: TeamSide | null;
+}
 
 export type RallyStep = 'our_serve' | 'opp_serve' | 'our_attack' | 'opp_attack';
 
@@ -81,18 +101,24 @@ export interface GameState {
   subLimit: number;
   mode: TrackMode;
   pending: PendingRally | null;
+  lineups: Record<number, SetLineup>;
+  templateLineup?: SetLineup | null; // last used lineup, prefilled for the next set/match
 }
 
 // Buttons in quick-tap mode
 export const SKILLS_BY_ROLE: Record<Role, Skill[]> = {
-  hitter: ['serve', 'attack', 'pass'],
+  outside: ['serve', 'attack', 'pass'],
+  middle: ['serve', 'attack', 'pass'],
+  opposite: ['serve', 'attack', 'pass'],
   setter: ['serve', 'attack'],
   libero: ['pass'],
 };
 
 // What the report shows per role (assists are recorded automatically)
 export const REPORT_SKILLS_BY_ROLE: Record<Role, Skill[]> = {
-  hitter: ['serve', 'attack', 'pass'],
+  outside: ['serve', 'attack', 'pass'],
+  middle: ['serve', 'attack', 'pass'],
+  opposite: ['serve', 'attack', 'pass'],
   setter: ['serve', 'attack', 'set'],
   libero: ['pass'],
 };
@@ -100,4 +126,9 @@ export const REPORT_SKILLS_BY_ROLE: Record<Role, Skill[]> = {
 export const SKILL_LABEL: Record<Skill, string> = { serve: 'Serve', attack: 'Attack', pass: 'Pass', set: 'Assist' };
 export const SKILL_SHORT: Record<Skill, string> = { serve: 'SRV', attack: 'ATK', pass: 'PAS', set: 'SET' };
 export const GRADE_LABEL: Record<Grade, string> = { minus: '−', zero: '0', plus: '#' };
-export const ROLE_LABEL: Record<Role, string> = { hitter: 'Hitter', setter: 'Setter', libero: 'Libero' };
+export const ROLE_LABEL: Record<Role, string> = { outside: 'Outside', middle: 'Middle', opposite: 'Opposite', setter: 'Setter', libero: 'Libero' };
+export const ROLE_SHORT: Record<Role, string> = { outside: 'OH', middle: 'MB', opposite: 'OPP', setter: 'S', libero: 'L' };
+export const ROLES: Role[] = ['outside', 'middle', 'opposite', 'setter', 'libero'];
+
+// Court layout as seen from behind our baseline: front row P4 P3 P2, back row P5 P6 P1
+export const COURT_LAYOUT: number[][] = [[4, 3, 2], [5, 6, 1]];

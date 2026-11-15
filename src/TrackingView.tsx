@@ -6,6 +6,8 @@ import {
   SKILLS_BY_ROLE, SKILL_SHORT, GRADE_LABEL, ROLE_LABEL, POINT_REASONS,
 } from './types';
 import { countsByPlayer, currentSetNumber, playerLabel, recyclesByPlayer, subsUsed } from './utils';
+import { CourtState } from './court';
+import { CourtMini } from './Lineup';
 
 interface TrackingViewProps {
   gameState: GameState;
@@ -15,10 +17,14 @@ interface TrackingViewProps {
   onUndo: () => void;
   canUndo: boolean;
   feedback: string | null;
+  court: CourtState;
+  onOpenLineup: () => void;
 }
 
 const ROLE_CHIP: Record<string, string> = {
-  hitter: 'bg-primary/15 text-primary',
+  outside: 'bg-primary/15 text-primary',
+  middle: 'bg-primary/15 text-primary',
+  opposite: 'bg-primary/15 text-primary',
   setter: 'bg-secondary/20 text-secondary',
   libero: 'bg-accent/20 text-accent',
 };
@@ -29,7 +35,7 @@ const GRADE_STYLE: Record<Grade, string> = {
   plus: 'bg-success/15 text-success border-success/30 active:bg-success active:text-black',
 };
 
-export default function TrackingView({ gameState, onStat, onPoint, onSub, onUndo, canUndo, feedback }: TrackingViewProps) {
+export default function TrackingView({ gameState, onStat, onPoint, onSub, onUndo, canUndo, feedback, court: courtState, onOpenLineup }: TrackingViewProps) {
   const [pendingSwap, setPendingSwap] = useState<string | null>(null);
   const counts = countsByPlayer(gameState.events);
   const recycles = recyclesByPlayer(gameState.events);
@@ -37,8 +43,18 @@ export default function TrackingView({ gameState, onStat, onPoint, onSub, onUndo
   const used = subsUsed(gameState.events, setNum);
 
   const indexed = gameState.players.map((p, i) => ({ p, i }));
-  const court = indexed.filter(x => x.p.onCourt);
-  const bench = indexed.filter(x => !x.p.onCourt);
+  // On court in court order (P4 P3 P2 P5 P6 P1), libero shown in her spot
+  const ORDER = [4, 3, 2, 5, 6, 1];
+  const court = ORDER.map(pos => ({ pos, id: courtState.display[pos - 1] }))
+    .filter(x => x.id)
+    .map(x => ({ ...indexed.find(y => y.p.id === x.id)!, pos: x.pos }))
+    .filter(x => x.p);
+  const shown = new Set(court.map(c => c.p.id));
+  const bench = indexed.filter(x => !shown.has(x.p.id));
+  // Subs work on the base lineup (liberos swap automatically)
+  const isBase = (id: string) => courtState.positions.includes(id);
+  const posOf = (id: string) => { const k = courtState.display.indexOf(id); return k >= 0 ? k + 1 : null; };
+  const replacedBy = (id: string) => isBase(id) && !shown.has(id) ? courtState.liberoId : null;
 
   const pending = gameState.players.find(p => p.id === pendingSwap) || null;
 
@@ -50,9 +66,9 @@ export default function TrackingView({ gameState, onStat, onPoint, onSub, onUndo
   const handleSwapTap = (p: Player) => {
     if (!pending) { setPendingSwap(p.id); return; }
     if (pending.id === p.id) { setPendingSwap(null); return; }
-    if (pending.onCourt === p.onCourt) { setPendingSwap(p.id); return; } // switch selection on same side
-    const inP = pending.onCourt ? p : pending;
-    const outP = pending.onCourt ? pending : p;
+    if (isBase(pending.id) === isBase(p.id)) { setPendingSwap(p.id); return; } // switch selection on same side
+    const inP = isBase(pending.id) ? p : pending;
+    const outP = isBase(pending.id) ? pending : p;
     onSub(inP.id, outP.id);
     setPendingSwap(null);
   };
@@ -60,7 +76,10 @@ export default function TrackingView({ gameState, onStat, onPoint, onSub, onUndo
   const renderCard = ({ p, i }: { p: Player; i: number }) => {
     const skills = SKILLS_BY_ROLE[p.role];
     const isPending = pendingSwap === p.id;
-    const isTarget = pending && pending.onCourt !== p.onCourt;
+    const isTarget = pending && p.role !== 'libero' && isBase(pending.id) !== isBase(p.id);
+    const onCourtNow = shown.has(p.id);
+    const pos = posOf(p.id);
+    const liberoFor = replacedBy(p.id);
     return (
       <motion.div
         key={p.id}
@@ -69,19 +88,21 @@ export default function TrackingView({ gameState, onStat, onPoint, onSub, onUndo
         className={`rounded-2xl border-2 p-3 transition-colors ${
           isPending ? 'border-primary bg-primary/10' :
           isTarget ? 'border-primary/40 border-dashed bg-white/5' :
-          p.onCourt ? 'border-white/10 bg-white/5' : 'border-white/5 bg-white/[0.02]'
+          onCourtNow ? 'border-white/10 bg-white/5' : 'border-white/5 bg-white/[0.02]'
         }`}
       >
         <div className="flex items-center justify-between gap-2 mb-2">
           <div className="flex items-center gap-2 min-w-0">
-            <span className={`font-black italic uppercase leading-none text-base sm:text-lg truncate ${p.onCourt ? '' : 'opacity-60'}`}>
+            {pos && <span className="shrink-0 text-[10px] font-mono font-black px-1.5 py-0.5 rounded bg-white text-black">P{pos}</span>}
+            <span className={`font-black italic uppercase leading-none text-base sm:text-lg truncate ${onCourtNow ? '' : 'opacity-60'}`}>
               {playerLabel(p, i)}
             </span>
             <span className={`shrink-0 text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${ROLE_CHIP[p.role]}`}>
               {ROLE_LABEL[p.role]}
             </span>
+            {liberoFor && <span className="shrink-0 text-[9px] font-bold uppercase text-accent">Libero in</span>}
           </div>
-          <button
+          {p.role !== 'libero' && <button
             onClick={() => handleSwapTap(p)}
             className={`shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider border transition-all active:scale-95 ${
               isPending ? 'bg-primary text-black border-primary' :
@@ -90,8 +111,8 @@ export default function TrackingView({ gameState, onStat, onPoint, onSub, onUndo
             }`}
           >
             <ArrowLeftRight className="w-3 h-3" />
-            {isTarget ? (p.onCourt ? 'Out' : 'In') : 'Sub'}
-          </button>
+            {isTarget ? (isBase(p.id) ? 'Out' : 'In') : 'Sub'}
+          </button>}
         </div>
         <div className="space-y-1.5">
           {skills.map(skill => (
@@ -179,19 +200,21 @@ export default function TrackingView({ gameState, onStat, onPoint, onSub, onUndo
           <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
             className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-primary/15 border border-primary/30 text-primary text-xs font-bold uppercase">
             <span>
-              {pending.onCourt ? 'Sub out' : 'Sub in'} {playerLabel(pending)}: tap {pending.onCourt ? 'a bench player' : 'a court player'}
+              {isBase(pending.id) ? 'Sub out' : 'Sub in'} {playerLabel(pending)}: tap {isBase(pending.id) ? 'a bench player' : 'a court player'}
             </span>
             <button onClick={() => setPendingSwap(null)} className="p-1"><X className="w-4 h-4" /></button>
           </motion.div>
         )}
       </AnimatePresence>
 
+      <CourtMini players={gameState.players} court={courtState} onOpen={onOpenLineup} />
+
       {/* On court */}
       <section className="space-y-2">
         <div className="text-[10px] uppercase tracking-widest font-bold text-white/30">On court ({court.length})</div>
         <div className="grid gap-2 lg:grid-cols-2">
           {court.length === 0
-            ? <div className="text-xs text-white/30 border border-dashed border-white/10 rounded-xl p-6 text-center">Nobody on court. Tap Sub on a bench player.</div>
+            ? <button onClick={onOpenLineup} className="text-xs text-white/50 border border-dashed border-white/15 rounded-xl p-6 text-center">No lineup yet. Tap to set it.</button>
             : court.map(renderCard)}
         </div>
       </section>
