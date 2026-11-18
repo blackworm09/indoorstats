@@ -137,6 +137,8 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
             ['Aces', stats.opponent.opp_ace, 'text-secondary'],
             ['Attack mistakes', stats.opponent.opp_attack_error, 'text-primary'],
             ['Service mistakes', stats.opponent.opp_serve_error, 'text-primary'],
+            ['Our blocks', stats.opponent.opp_blocked, 'text-primary'],
+            ['Our unforced errors', stats.opponent.own_error, 'text-secondary'],
           ].map(([label, n, tone]) => (
             <div key={label as string} className="bg-white/5 rounded-xl p-2.5">
               <div className={`text-xl font-black italic ${tone}`}>{n as number}</div>

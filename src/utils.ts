@@ -91,7 +91,7 @@ export function calculateStats(state: GameState, set: number | null) {
     stats[p.id] = { player: p, serve: emptyLine(), attack: emptyLine(), pass: emptyLine(), set: emptyLine() };
   });
   const team = { serve: emptyLine(), attack: emptyLine(), pass: emptyLine(), set: emptyLine() };
-  const opponent = { opp_attack_point: 0, opp_ace: 0, opp_attack_error: 0, opp_serve_error: 0, other_us: 0, other_them: 0 };
+  const opponent = { opp_attack_point: 0, opp_ace: 0, opp_attack_error: 0, opp_serve_error: 0, opp_blocked: 0, own_error: 0, other_us: 0, other_them: 0 };
 
   state.events.forEach(e => {
     if (set !== null && e.set !== set) return;

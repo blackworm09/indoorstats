@@ -20,6 +20,7 @@ export interface StatEvent {
   playerId: string;
   skill: Skill;
   grade: Grade;
+  code?: RatingCode; // v2 fine rating (grade is derived from it for older reports)
   recycle?: boolean; // attack kept in play on our side (counts as a 0 attempt)
   pos?: number; // player's court position (1-6) when the stat happened
   rot?: number; // team rotation (setter's position) when the stat happened
@@ -27,7 +28,13 @@ export interface StatEvent {
   timestamp: number;
 }
 
-export type PointReason = 'opp_attack_point' | 'opp_ace' | 'opp_attack_error' | 'opp_serve_error' | 'other';
+// v2 rating codes. Pass/serve (DataVolley): = error, / overpass, - negative, ! ok, + positive, # perfect/ace.
+// Attack: err error, blk blocked (counts as error), play in play, rec recycle, kill.
+export type ScaleCode = '=' | '/' | '-' | '!' | '+' | '#';
+export type AttackCode = 'err' | 'blk' | 'play' | 'rec' | 'kill';
+export type RatingCode = ScaleCode | AttackCode;
+
+export type PointReason = 'opp_attack_point' | 'opp_ace' | 'opp_attack_error' | 'opp_serve_error' | 'opp_blocked' | 'own_error' | 'other';
 
 export interface PointEvent {
   kind: 'point';
@@ -36,6 +43,7 @@ export interface PointEvent {
   set: number;
   team: TeamSide;
   reason?: PointReason;
+  playerId?: string; // own_error: who made the unforced error
   timestamp: number;
 }
 
@@ -85,7 +93,8 @@ export interface PendingRally {
   servingTeam: TeamSide;
   step: RallyStep;
   actions: StatEvent[]; // not yet committed (e.g. a pass before the attack)
-  history: { step: RallyStep; actionCount: number }[];
+  trail?: string[]; // breadcrumb, incl. opponent actions
+  history: { step: RallyStep; actionCount: number; trailCount?: number }[];
 }
 
 export type TrackMode = 'rally' | 'quick';
@@ -99,7 +108,7 @@ export interface GameState {
   opponentName: string;
   autoScore: boolean;
   subLimit: number;
-  mode: TrackMode;
+  mode?: TrackMode; // legacy
   pending: PendingRally | null;
   lineups: Record<number, SetLineup>;
   templateLineup?: SetLineup | null; // last used lineup, prefilled for the next set/match

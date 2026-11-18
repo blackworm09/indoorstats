@@ -1,15 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, BarChart3, Settings, XCircle, Trophy, Plus, Trash2, Minus, Zap, X } from 'lucide-react';
+import { XCircle, Trophy, Plus, Trash2, Minus, Maximize } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { GameState, Grade, MatchEvent, PendingRally, Player, PointReason, Role, Skill, TeamSide, TrackMode, GRADE_LABEL, SKILL_LABEL, ROLE_LABEL, ROLE_SHORT, ROLES, POINT_REASONS, SetLineup } from './types';
+import { GameState, MatchEvent, PendingRally, Player, Role, TeamSide, ROLE_LABEL, ROLE_SHORT, ROLES, SetLineup } from './types';
 import {
-  autoPointFor, calculateStats, currentSetNumber, formatMatchDate, getSetLimit, isSetWon,
-  playerLabel, scoreForSet, SETS_TO_WIN, formatValue, detectTrends, setterFor, rotationTable, statsByPosition,
+  calculateStats, currentSetNumber, formatMatchDate, getSetLimit, isSetWon,
+  playerLabel, scoreForSet, SETS_TO_WIN, formatValue, detectTrends, rotationTable, statsByPosition,
 } from './utils';
-import TrackingView from './TrackingView';
 import RallyView from './RallyView';
 import ReportView from './ReportView';
-import { courtState, defaultLineup, positionOf } from './court';
+import { courtState, defaultLineup } from './court';
 import { LineupSheet } from './Lineup';
 
 const MATCH_KEY = 'indoorstats_match';
@@ -36,7 +35,6 @@ function freshState(players: Player[]): GameState {
     opponentName: '',
     autoScore: true,
     subLimit: 8,
-    mode: 'rally',
     pending: null,
     lineups: {},
     templateLineup: null,
@@ -78,7 +76,6 @@ export default function App() {
   const [setEndWinner, setSetEndWinner] = useState<TeamSide | null>(null);
   const [confirmState, setConfirmState] = useState<ConfirmState>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
-  const [showTrends, setShowTrends] = useState(false);
   const [showLineup, setShowLineup] = useState(false);
   const feedbackTimer = useRef<number | undefined>(undefined);
 
@@ -131,29 +128,6 @@ export default function App() {
 
   const pushEvent = (e: MatchEvent) => setGameState(prev => ({ ...prev, events: [...prev.events, e] }));
 
-  const handleStat = (playerId: string, skill: Skill, grade: Grade, recycle = false) => {
-    const point = gameState.autoScore && !recycle ? autoPointFor(skill, grade) : null;
-    // Attacks also credit the setter; both share a group id so Undo removes them together
-    const setterId = skill === 'attack' ? setterFor(gameState, playerId) : null;
-    const groupId = setterId ? uid('q') : undefined;
-    const ts = Date.now();
-    const newEvents: MatchEvent[] = [];
-    const tag = (id: string) => ({ pos: positionOf(court, id) ?? undefined, rot: court.rotation ?? undefined });
-    if (setterId) newEvents.push({ kind: 'stat', id: uid('e'), rallyId: groupId, set: setNum, playerId: setterId, skill: 'set', grade, point: null, timestamp: ts, ...tag(setterId) });
-    newEvents.push({ kind: 'stat', id: uid('e'), rallyId: groupId, set: setNum, playerId, skill, grade, point, timestamp: ts, ...tag(playerId), ...(recycle ? { recycle: true } : {}) });
-    setGameState(prev => ({ ...prev, events: [...prev.events, ...newEvents] }));
-    const p = gameState.players.find(pp => pp.id === playerId);
-    const idx = gameState.players.findIndex(pp => pp.id === playerId);
-    const assist = setterId && grade === 'plus' ? ` · assist ${playerLabel(gameState.players.find(pp => pp.id === setterId)!)}` : '';
-    flash(`${p ? playerLabel(p, idx) : ''} · ${SKILL_LABEL[skill]} ${recycle ? 'recycle' : GRADE_LABEL[grade]}${assist}${point ? (point === 'own' ? ' · +1 us' : ' · +1 them') : ''}`);
-  };
-
-  const handlePoint = (team: TeamSide, reason: PointReason = 'other') => {
-    pushEvent({ kind: 'point', id: uid('e'), set: setNum, team, reason, timestamp: Date.now() });
-    const label = POINT_REASONS.find(r => r.reason === reason)?.label;
-    flash(`${label ? label + ' · ' : ''}${team === 'own' ? '+1 us' : '+1 them'}`);
-  };
-
   const handleSub = (inId: string, outId: string) => {
     const inP = gameState.players.find(p => p.id === inId);
     const outP = gameState.players.find(p => p.id === outId);
@@ -171,7 +145,7 @@ export default function App() {
     setGameState(prev => {
       const s = currentSetNumber(prev);
       // Rally mode: step back inside the rally in progress first
-      const p = prev.mode === 'rally' && prev.pending && prev.pending.set === s ? prev.pending : null;
+      const p = prev.pending && prev.pending.set === s ? prev.pending : null;
       if (p && p.history.length > 0) {
         const h = p.history[p.history.length - 1];
         return { ...prev, pending: { ...p, step: h.step, actions: p.actions.slice(0, h.actionCount), history: p.history.slice(0, -1) } };
@@ -198,7 +172,6 @@ export default function App() {
   };
 
   const setPending = (pending: PendingRally | null) => setGameState(prev => ({ ...prev, pending }));
-  const setMode = (mode: TrackMode) => setGameState(prev => ({ ...prev, mode }));
 
   const closeSet = (winner: TeamSide) => {
     setGameState(prev => {
@@ -234,7 +207,6 @@ export default function App() {
           ...freshState(prev.players),
           autoScore: prev.autoScore,
           subLimit: prev.subLimit,
-          mode: prev.mode,
           templateLineup: prev.lineups[1] ?? prev.templateLineup ?? null,
         }));
         setView('track');
@@ -273,7 +245,7 @@ export default function App() {
       });
     });
     const o = st.opponent;
-    csv += `\nOPPONENT\nAttack points,${o.opp_attack_point}\nAces,${o.opp_ace}\nAttack mistakes,${o.opp_attack_error}\nService mistakes,${o.opp_serve_error}\nOther points us,${o.other_us}\nOther points them,${o.other_them}\n`;
+    csv += `\nOPPONENT\nAttack points,${o.opp_attack_point}\nAces,${o.opp_ace}\nAttack mistakes,${o.opp_attack_error}\nService mistakes,${o.opp_serve_error}\nOur blocks,${o.opp_blocked}\nOur unforced errors,${o.own_error}\nOther points us,${o.other_us}\nOther points them,${o.other_them}\n`;
     const subject = encodeURIComponent(`IndoorStats Match Report - vs ${opp} - ${date}`);
     window.location.href = `mailto:?subject=${subject}&body=${encodeURIComponent(csv)}`;
   };
@@ -293,85 +265,52 @@ export default function App() {
 
 
   return (
-    <div className="min-h-screen min-h-[100dvh] flex flex-col font-sans selection:bg-primary selection:text-black">
+    <div className="h-[100dvh] flex flex-col font-sans bg-background text-ink selection:bg-primary selection:text-black">
       {/* HEADER */}
-      <header className="flex items-center justify-between px-4 sm:px-8 py-3 sm:py-5 border-b border-white/10 bg-surface sticky top-0 z-50">
-        <div className="bg-primary text-black font-black px-2 py-0.5 rounded text-sm sm:text-lg uppercase tracking-tighter">INDOORSTATS</div>
-        <div className="flex items-center gap-4 sm:gap-8">
-          <div className="text-center">
-            <div className="text-[9px] text-white/40 uppercase tracking-widest">Set {matchOver ? '–' : setNum} <span className="text-white/20">to {setLimit}</span></div>
-            <div className="text-3xl sm:text-4xl font-black tracking-tighter tabular-nums leading-none">
-              {score.own} <span className="text-white/20 text-lg">:</span> {score.opponent}
-            </div>
-          </div>
-          <div className="text-center">
-            <div className="text-[9px] text-white/40 uppercase tracking-widest">Sets</div>
-            <div className="text-xl sm:text-2xl font-black italic text-primary leading-none">{gameState.sets.own}-{gameState.sets.opponent}</div>
-          </div>
+      <header className="flex items-center gap-3 sm:gap-6 px-4 sm:px-6 h-14 sm:h-16 border-b border-line bg-surface sticky top-0 z-50">
+        <span className="font-display font-bold tracking-[0.16em] text-sm sm:text-base hidden sm:inline">INDOORSTATS</span>
+        <nav className="flex gap-4 h-full">
+          {([['track', 'Live'], ['report', 'Analysis']] as const).map(([v, label]) => (
+            <button key={v} onClick={() => setView(v)}
+              className={`h-full font-display font-bold tracking-[0.12em] uppercase text-xs sm:text-sm border-b-2 ${view === v ? 'border-primary text-ink' : 'border-transparent text-mute'}`}>{label}</button>
+          ))}
+          <button onClick={() => setShowConfig(true)} className="h-full font-display font-bold tracking-[0.12em] uppercase text-xs sm:text-sm border-b-2 border-transparent text-mute">Team</button>
+        </nav>
+        <div className="flex-1 flex items-center justify-center gap-2 sm:gap-3">
+          <span className="font-display text-[11px] font-bold tracking-[0.14em] text-primary hidden sm:inline">US</span>
+          <span className="font-display text-3xl sm:text-4xl font-bold tabular-nums leading-none">{score.own}</span>
+          <span className="font-display text-2xl text-mute leading-none">:</span>
+          <span className="font-display text-3xl sm:text-4xl font-bold tabular-nums leading-none">{score.opponent}</span>
+          <span className="font-display text-[11px] font-bold tracking-[0.14em] text-secondary hidden sm:inline">THEM</span>
+          <span className="font-display text-[11px] font-semibold tracking-[0.12em] text-mute ml-2 hidden md:inline">SET {matchOver ? '–' : setNum} · {gameState.sets.own}–{gameState.sets.opponent} · TO {setLimit}</span>
         </div>
-        <div className="flex items-center gap-2">
-          {trends.length > 0 && (
-            <button onClick={() => setShowTrends(true)} aria-label="Live trends"
-              className="relative p-2.5 bg-white/5 hover:bg-white/10 rounded-full transition-colors border border-white/10">
-              <Zap className="w-4 h-4 text-primary" />
-              <span className="absolute -top-1 -right-1 w-4 h-4 bg-primary text-black text-[9px] font-black rounded-full flex items-center justify-center">
-                {trends.length}
-              </span>
-            </button>
-          )}
-          <button onClick={() => setView(view === 'track' ? 'report' : 'track')} aria-label="Toggle report"
-            className="p-2.5 bg-white/5 hover:bg-white/10 rounded-full transition-colors border border-white/10">
-            {view === 'track' ? <BarChart3 className="w-4 h-4" /> : <Activity className="w-4 h-4" />}
-          </button>
-          <button onClick={() => setShowConfig(true)} aria-label="Roster and settings"
-            className="p-2.5 bg-white/5 hover:bg-white/10 rounded-full transition-colors border border-white/10">
-            <Settings className="w-4 h-4" />
-          </button>
-        </div>
+        <button onClick={manualEndSet} disabled={matchOver}
+          className="h-9 px-3 rounded-md border border-line font-display font-bold tracking-[0.1em] uppercase text-xs whitespace-nowrap disabled:opacity-30">End set</button>
+        <button onClick={() => { try { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); } catch { /* not supported */ } }}
+          aria-label="Fullscreen" className="h-9 w-9 rounded-md border border-line hidden sm:flex items-center justify-center text-mute"><Maximize className="w-4 h-4" /></button>
       </header>
 
       {/* MAIN */}
-      <main className="flex-1 flex flex-col overflow-hidden">
+      <main className="flex-1 flex flex-col overflow-y-auto lg:overflow-hidden min-h-0">
         {view === 'track' ? (
-          <div className="flex-1 flex flex-col bg-surface min-h-0 max-w-5xl w-full mx-auto">
+          <div className="flex-1 flex flex-col bg-background min-h-0 w-full">
             {matchOver && (
-              <div className="mx-4 sm:mx-6 mt-4 p-3 rounded-xl bg-primary/15 border border-primary/30 text-primary text-xs font-bold uppercase text-center">
-                Match over · {gameState.sets.own}-{gameState.sets.opponent}. Check the report or start a new match.
+              <div className="mx-4 mt-4 p-3 rounded-lg border border-primary/40 text-primary font-display font-bold tracking-[0.1em] uppercase text-sm text-center">
+                Match over · {gameState.sets.own}–{gameState.sets.opponent}. Check Analysis or start a new match.
               </div>
             )}
-            {/* Mode toggle */}
-            <div className="mx-4 sm:mx-6 mt-4 flex gap-1 p-1 bg-white/5 rounded-xl border border-white/10">
-              {([['rally', 'Rally flow'], ['quick', 'Quick tap']] as [TrackMode, string][]).map(([m, label]) => (
-                <button key={m} onClick={() => setMode(m)}
-                  className={`flex-1 py-2 rounded-lg font-bold uppercase text-[11px] tracking-wider transition-all ${gameState.mode === m ? 'bg-primary text-black' : 'text-white/40'}`}>
-                  {label}
-                </button>
-              ))}
-            </div>
-            {gameState.mode === 'rally' ? (
-              <RallyView
-                gameState={gameState}
-                setPending={setPending}
-                commitRally={commitRally}
-                onSub={handleSub}
-                onUndo={handleUndo}
-                canUndo={currentSetEvents.length > 0 || !!(gameState.pending && gameState.pending.set === setNum)}
-                court={court}
-                onOpenLineup={() => setShowLineup(true)}
-              />
-            ) : (
-              <TrackingView
-                gameState={gameState}
-                onStat={handleStat}
-                onPoint={handlePoint}
-                onSub={handleSub}
-                onUndo={handleUndo}
-                canUndo={currentSetEvents.length > 0}
-                feedback={feedback}
-                court={court}
-                onOpenLineup={() => setShowLineup(true)}
-              />
-            )}
+            <RallyView
+              gameState={gameState}
+              setPending={setPending}
+              commitRally={commitRally}
+              onSub={handleSub}
+              onUndo={handleUndo}
+              onRotate={rotateCourt}
+              canUndo={currentSetEvents.length > 0 || !!(gameState.pending && gameState.pending.set === setNum)}
+              court={court}
+              onOpenLineup={() => setShowLineup(true)}
+              trends={trends}
+            />
           </div>
         ) : (
           <div className="flex-1 bg-surface overflow-y-auto">
@@ -382,27 +321,13 @@ export default function App() {
 
       {/* Tap feedback (rally mode; quick mode shows its own) */}
       <AnimatePresence>
-        {feedback && view === 'track' && gameState.mode === 'rally' && (
+        {feedback && view === 'track' && (
           <motion.div key={feedback} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, transition: { duration: 0 } }}
-            className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-white text-black text-xs font-black uppercase tracking-wider shadow-2xl whitespace-nowrap">
+            className="fixed top-[72px] left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-ink text-[#0B0C0E] font-display text-sm font-bold uppercase tracking-[0.1em] shadow-2xl whitespace-nowrap">
             {feedback}
           </motion.div>
         )}
       </AnimatePresence>
-
-      {/* BOTTOM BAR */}
-      {view === 'track' && (
-        <div className="sticky bottom-0 z-40 bg-surface/95 backdrop-blur-xl border-t border-white/10 px-4 py-2 flex items-center gap-2 safe-bottom">
-          <button onClick={manualEndSet} disabled={matchOver}
-            className="flex-1 py-3 bg-white/10 text-white font-bold uppercase text-[10px] tracking-wider rounded-xl active:scale-95 transition-all border border-white/10 disabled:opacity-30">
-            End Set
-          </button>
-          <button onClick={() => setView('report')}
-            className="flex-1 py-3 bg-primary text-black font-black uppercase text-[10px] tracking-wider rounded-xl active:scale-95 transition-all">
-            Report
-          </button>
-        </div>
-      )}
 
       {/* SET END MODAL */}
       <AnimatePresence>
@@ -428,41 +353,6 @@ export default function App() {
                   Undo last point
                 </button>
               </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* TRENDS MODAL */}
-      <AnimatePresence>
-        {showTrends && (
-          <div className="fixed inset-0 z-[150] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-xl" onClick={() => setShowTrends(false)}>
-            <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 100, opacity: 0 }}
-              onClick={e => e.stopPropagation()}
-              className="bg-surface border border-white/10 p-6 rounded-t-3xl sm:rounded-3xl w-full max-w-md shadow-2xl max-h-[80dvh] overflow-y-auto">
-              <div className="flex justify-between items-center mb-4">
-                <div className="flex items-center gap-2">
-                  <Zap className="w-5 h-5 text-primary" />
-                  <h3 className="text-lg font-black italic uppercase tracking-tight">Live Trends</h3>
-                </div>
-                <button onClick={() => setShowTrends(false)} className="p-2 hover:bg-white/10 rounded-full"><X className="w-5 h-5" /></button>
-              </div>
-              {trends.length === 0 ? (
-                <div className="text-center py-12 opacity-30 text-sm">No trends right now. Keep tracking!</div>
-              ) : (
-                <div className="space-y-2">
-                  {trends.map((t, i) => (
-                    <div key={i} className={`p-3 rounded-xl border ${
-                      t.tone === 'alert' ? 'bg-secondary/20 text-secondary border-secondary/30' :
-                      t.tone === 'warning' ? 'bg-accent/20 text-accent border-accent/30' :
-                      'bg-primary/20 text-primary border-primary/30'
-                    }`}>
-                      <div className="text-[9px] font-bold uppercase tracking-widest opacity-60 mb-0.5">{t.group}</div>
-                      <div className="text-xs font-bold uppercase leading-tight">{t.message}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
             </motion.div>
           </div>
         )}

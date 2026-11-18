@@ -57,12 +57,21 @@ interface LineupSheetProps {
 }
 
 type Step = 1 | 2 | 3;
-const STEP_LABEL: Record<Step, string> = { 1: 'Starting six', 2: 'Libero', 3: 'First serve' };
+// Fill order follows the court as you see it: front row P4 P3 P2, then back row P5 P6 P1
+const FILL_ORDER = COURT_LAYOUT.flat();
+const nextEmpty = (positions: (string | null)[], after: number | null) => {
+  const start = after === null ? 0 : FILL_ORDER.indexOf(after) + 1;
+  for (let k = 0; k < FILL_ORDER.length; k++) {
+    const pos = FILL_ORDER[(start + k) % FILL_ORDER.length];
+    if (!positions[pos - 1]) return pos;
+  }
+  return null;
+};
 
 export function LineupSheet({ players, setNum, initial, court, setInProgress, onSave, onRotate, onClose }: LineupSheetProps) {
   const [lineup, setLineup] = useState<SetLineup>(initial);
   const [step, setStep] = useState<Step>(1);
-  const [slot, setSlot] = useState<number | null>(null);
+  const [slot, setSlot] = useState<number | null>(() => nextEmpty(initial.positions, null));
 
   const liberos = players.filter(p => p.role === 'libero');
   const courtPlayers = players.filter(p => p.role !== 'libero');
@@ -81,7 +90,7 @@ export function LineupSheet({ players, setNum, initial, court, setInProgress, on
     if (existing >= 0) positions[existing] = positions[slot - 1]; // already placed: swap the two spots
     positions[slot - 1] = playerId;
     setLineup({ ...lineup, positions, liberoReplaces: lineup.liberoReplaces.filter(id => positions.includes(id)) });
-    setSlot(null);
+    setSlot(nextEmpty(positions, slot)); // keep the picker open on the next empty spot
   };
 
   const clearSpot = () => {
@@ -112,14 +121,6 @@ export function LineupSheet({ players, setNum, initial, court, setInProgress, on
         <div className="flex justify-between items-start">
           <div>
             <h3 className="text-2xl font-black italic uppercase tracking-tighter text-primary">Set {setNum} Lineup</h3>
-            <div className="flex gap-1.5 mt-2">
-              {([1, 2, 3] as Step[]).map(st => (
-                <button key={st} onClick={() => (st < step || canNext[step]) && setStep(st)}
-                  className={`text-[9px] font-bold uppercase tracking-widest px-2 py-1 rounded-md ${step === st ? 'bg-primary text-black' : st < step ? 'bg-white/10 text-white/70' : 'bg-white/5 text-white/30'}`}>
-                  {st}. {STEP_LABEL[st]}
-                </button>
-              ))}
-            </div>
           </div>
           {onClose && <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full"><X className="w-6 h-6" /></button>}
         </div>
@@ -130,7 +131,7 @@ export function LineupSheet({ players, setNum, initial, court, setInProgress, on
             {setInProgress && court && (
               <div className="rounded-2xl border border-white/10 p-3 space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-bold uppercase tracking-widest text-white/50">Court out of sync? Now R{court.rotation ?? '–'}</span>
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-white/50">Now R{court.rotation ?? '–'}</span>
                   <div className="flex gap-1.5">
                     <button onClick={() => onRotate(-1)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-white/15 text-[10px] font-bold uppercase active:scale-95">
                       <RotateCcw className="w-3 h-3" /> Back
@@ -151,11 +152,8 @@ export function LineupSheet({ players, setNum, initial, court, setInProgress, on
                     </div>
                   ))}
                 </div>
-                <p className="text-[10px] text-white/30">Below is the starting lineup. Changing it re-calculates the whole set.</p>
               </div>
             )}
-
-            <p className="text-xs text-white/50">{slot === null ? `Tap a position, then pick who starts there. ${filled}/6 set.` : `Who starts in P${slot}?`}</p>
 
             <div className="space-y-1.5">
               <div className="text-center text-[9px] font-bold uppercase tracking-[0.3em] text-white/30 border-b-2 border-white/20 pb-1">Net</div>
@@ -167,7 +165,7 @@ export function LineupSheet({ players, setNum, initial, court, setInProgress, on
                     return (
                       <button key={pos} onClick={() => setSlot(slot === pos ? null : pos)}
                         className={`h-16 rounded-xl border-2 px-2 text-left transition-all active:scale-95 ${slot === pos ? 'border-primary bg-primary/10' : id ? 'border-white/15 bg-white/5' : 'border-dashed border-white/20'}`}>
-                        <span className="block text-[9px] font-mono font-bold text-white/40">P{pos}{pos === 1 ? ' · serve' : ''}</span>
+                        <span className="block text-[9px] font-mono font-bold text-white/40">P{pos}</span>
                         <span className="block text-xs font-black uppercase truncate">{label(id) ?? <span className="text-white/25">+ Add</span>}</span>
                         {p && <span className="block text-[9px] font-bold text-white/30">{ROLE_SHORT[p.role]}</span>}
                       </button>
@@ -209,20 +207,18 @@ export function LineupSheet({ players, setNum, initial, court, setInProgress, on
         {step === 2 && (
           <div className="space-y-4">
             <div className="space-y-2">
-              <div className="text-xs text-white/50">Who is the libero?</div>
               <div className="flex flex-wrap gap-1.5">
                 {[...liberos.map(l => l.id), null].map(id => (
                   <button key={id ?? 'none'} onClick={() => setLineup({ ...lineup, liberoId: id, liberoReplaces: id ? lineup.liberoReplaces : [] })}
-                    className={`px-3 py-2 rounded-lg text-xs font-bold uppercase border ${lineup.liberoId === id ? 'bg-accent text-black border-accent' : 'border-white/10 text-white/60'}`}>
+                    className={`px-3 py-2 rounded-lg text-xs font-bold uppercase border ${lineup.liberoId === id ? 'bg-primary text-black border-primary' : 'border-white/10 text-white/60'}`}>
                     {id ? label(id) : 'No libero'}
                   </button>
                 ))}
               </div>
-              {liberos.length === 0 && <p className="text-[10px] text-white/30">No player has the L role in your roster.</p>}
+              {liberos.length === 0 && <p className="text-[10px] text-white/30">No libero in roster.</p>}
             </div>
             {lineup.liberoId && (
               <div className="space-y-2">
-                <div className="text-xs text-white/50">For whom does {label(lineup.liberoId)} come on court? (max 2)</div>
                 <div className="grid grid-cols-3 gap-1.5">
                   {lineup.positions.map((id, k) => {
                     if (!id) return null;
@@ -230,15 +226,14 @@ export function LineupSheet({ players, setNum, initial, court, setInProgress, on
                     const on = lineup.liberoReplaces.includes(id);
                     return (
                       <button key={id} onClick={() => toggleReplace(id)}
-                        className={`rounded-lg px-2 py-2 text-left border-2 transition-all active:scale-95 ${on ? 'border-accent bg-accent/15' : 'border-white/10 bg-white/5'}`}>
+                        className={`rounded-lg px-2 py-2 text-left border-2 transition-all active:scale-95 ${on ? 'border-primary bg-primary/10' : 'border-white/10 bg-white/5'}`}>
                         <span className="block text-[9px] font-mono text-white/40">P{k + 1}</span>
-                        <span className={`block text-[11px] font-black uppercase truncate ${on ? 'text-accent' : ''}`}>{label(id)}</span>
+                        <span className={`block text-[11px] font-black uppercase truncate ${on ? 'text-primary' : ''}`}>{label(id)}</span>
                         <span className="block text-[9px] font-bold text-white/30">{ROLE_SHORT[p.role]}</span>
                       </button>
                     );
                   })}
                 </div>
-                <p className="text-[10px] text-white/30">The libero comes in when they rotate to the back row. If they're in P1 while we serve, they serve first.</p>
               </div>
             )}
           </div>
@@ -247,7 +242,6 @@ export function LineupSheet({ players, setNum, initial, court, setInProgress, on
         {/* STEP 3: first serve */}
         {step === 3 && (
           <div className="space-y-2">
-            <div className="text-xs text-white/50">Who serves first in set {setNum}?</div>
             <div className="grid grid-cols-2 gap-2">
               <button onClick={() => setLineup({ ...lineup, firstServe: 'own' })}
                 className={`py-5 rounded-xl font-black uppercase text-base border-2 ${lineup.firstServe === 'own' ? 'bg-primary text-black border-primary' : 'border-white/10 text-white/60'}`}>We serve</button>
@@ -266,12 +260,12 @@ export function LineupSheet({ players, setNum, initial, court, setInProgress, on
           {step < 3 ? (
             <button onClick={() => canNext[step] && setStep((step + 1) as Step)} disabled={!canNext[step]}
               className="flex-1 p-4 bg-primary text-black rounded-2xl font-black uppercase text-xs tracking-widest active:scale-95 transition-all disabled:opacity-30">
-              {step === 1 ? (filled < 6 ? `Fill all 6 positions (${filled}/6)` : 'Next: Libero') : (canNext[2] ? 'Next: First serve' : 'Pick who the libero replaces')}
+              {step === 1 && filled < 6 ? `Next · ${filled}/6` : 'Next'}
             </button>
           ) : (
             <button onClick={() => canNext[3] && filled === 6 && onSave(lineup)} disabled={!canNext[3] || filled < 6}
               className="flex-1 p-4 bg-primary text-black rounded-2xl font-black uppercase text-xs tracking-widest active:scale-95 transition-all disabled:opacity-30">
-              {lineup.firstServe === null ? 'Pick who serves first' : 'Save Lineup'}
+              Save
             </button>
           )}
         </div>

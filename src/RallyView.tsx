@@ -1,13 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeftRight, RotateCcw, X } from 'lucide-react';
+import { ArrowLeftRight, RotateCcw, RotateCw, Undo2, X } from 'lucide-react';
 import {
-  GameState, Grade, MatchEvent, PendingRally, Player, PointReason, RallyStep, Skill, StatEvent, TeamSide,
-  GRADE_LABEL, ROLE_LABEL, ROLE_SHORT, COURT_LAYOUT,
+  AttackCode, GameState, Grade, MatchEvent, PendingRally, Player, PointReason, RallyStep, RatingCode, ScaleCode, Skill, StatEvent, TeamSide,
+  ROLE_LABEL, ROLE_SHORT, COURT_LAYOUT,
 } from './types';
-import { currentSetNumber, playerLabel, setterFor, subsUsed } from './utils';
+import { currentSetNumber, playerLabel, setterFor, subsUsed, Trend } from './utils';
 import { CourtState, positionOf } from './court';
-import { CourtMini } from './Lineup';
 
 interface RallyViewProps {
   gameState: GameState;
@@ -15,323 +14,426 @@ interface RallyViewProps {
   commitRally: (events: MatchEvent[], message: string) => void;
   onSub: (inId: string, outId: string) => void;
   onUndo: () => void;
+  onRotate: (delta: number) => void;
   canUndo: boolean;
   court: CourtState;
   onOpenLineup: () => void;
+  trends: Trend[];
 }
 
 const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
-const STEP_TITLE: Record<RallyStep, string> = {
-  our_serve: 'Our serve · who serves?',
-  opp_serve: 'Opponent serves · who passes?',
-  our_attack: 'Our attack · who attacks?',
-  opp_attack: 'Opponent attack',
+// ---------- Rating scales ----------
+// Colour = quality of the action being rated: dark red worst … dark green best
+export type Tone = 'poor' | 'rose' | 'low' | 'neu' | 'good' | 'mid' | 'top';
+export const TONE_CLASS: Record<Tone, string> = {
+  poor: 'bg-[#9F1239] text-white',
+  rose: 'bg-[#F43F5E] text-[#0D0F12]',
+  low: 'bg-[#FDA4AF] text-[#0D0F12]',
+  neu: 'bg-[#262B33] text-[#F5F7FA] border-[1.5px] border-[#3A404A]',
+  good: 'bg-[#6EE7B7] text-[#0D0F12]',
+  mid: 'bg-[#10B981] text-[#0D0F12]',
+  top: 'bg-[#047857] text-white',
 };
 
-export default function RallyView({ gameState, setPending, commitRally, onSub, onUndo, canUndo, court, onOpenLineup }: RallyViewProps) {
-  const setNum = currentSetNumber(gameState);
+interface ScaleItem<C extends RatingCode> { code: C; sym: string; label: string; tone: Tone; info: string }
 
-  // Current rally: stored pending rally, or a fresh one served by whoever serves next
+export const SERVE_SCALE: ScaleItem<ScaleCode>[] = [
+  { code: '=', sym: '=', label: 'Error', tone: 'poor', info: 'Serve error. +1 them.' },
+  { code: '-', sym: '−', label: 'Negative', tone: 'low', info: 'They pass # or +. All options for them.' },
+  { code: '!', sym: '!', label: 'OK', tone: 'neu', info: 'They pass !. No quick for them.' },
+  { code: '+', sym: '+', label: 'Positive', tone: 'good', info: 'They pass −. High ball only for them.' },
+  { code: '/', sym: '/', label: 'Overpass', tone: 'mid', info: 'They send it straight back. Free ball: our attack next.' },
+  { code: '#', sym: '#', label: 'Ace', tone: 'top', info: '+1 us.' },
+];
+
+export const PASS_SCALE: ScaleItem<ScaleCode>[] = [
+  { code: '=', sym: '=', label: 'Error', tone: 'poor', info: 'Aced or reception error. +1 them.' },
+  { code: '/', sym: '/', label: 'Overpass', tone: 'rose', info: "Straight back or can't be attacked. Free ball for them." },
+  { code: '-', sym: '−', label: 'Negative', tone: 'low', info: 'Far off the net or so low the setter must bump. High ball only.' },
+  { code: '!', sym: '!', label: 'OK', tone: 'neu', info: 'High ball inside 3 m. No quick.' },
+  { code: '+', sym: '+', label: 'Positive', tone: 'good', info: 'Setter moves a little. Quick still possible.' },
+  { code: '#', sym: '#', label: 'Perfect', tone: 'top', info: 'Setter has every option.' },
+];
+
+export const ATTACK_SCALE: ScaleItem<AttackCode>[] = [
+  { code: 'err', sym: '−', label: 'Error', tone: 'poor', info: 'Out or net. +1 them.' },
+  { code: 'blk', sym: '■', label: 'Blocked', tone: 'rose', info: 'Blocked for a point. +1 them. Counts as an error.' },
+  { code: 'play', sym: '0', label: 'In play', tone: 'neu', info: 'They defend it.' },
+  { code: 'rec', sym: '↺', label: 'Recycle', tone: 'good', info: 'Covered or played back by us. We attack again.' },
+  { code: 'kill', sym: '#', label: 'Kill', tone: 'top', info: '+1 us.' },
+];
+
+export const OPP_ATTACK_SCALE: ScaleItem<AttackCode>[] = [
+  { code: 'err', sym: '−', label: 'Error', tone: 'poor', info: 'Their attack out or net. +1 us.' },
+  { code: 'blk', sym: '■', label: 'Block', tone: 'rose', info: 'We block it for a point. +1 us.' },
+  { code: 'play', sym: '0', label: 'Dig', tone: 'neu', info: 'We dig it. Our attack next.' },
+  { code: 'rec', sym: '↺', label: 'Recycle', tone: 'good', info: 'They keep it alive and attack again.' },
+  { code: 'kill', sym: '#', label: 'Kill', tone: 'top', info: 'Their kill. +1 them.' },
+];
+
+// Coarse grade for the existing reports (stage 4 replaces these with the full scale)
+export function gradeFor(skill: Skill, code: RatingCode): Grade {
+  if (skill === 'attack' || skill === 'set') return code === 'kill' ? 'plus' : code === 'err' || code === 'blk' ? 'minus' : 'zero';
+  if (skill === 'serve') return code === '#' ? 'plus' : code === '=' ? 'minus' : 'zero';
+  return code === '#' || code === '+' ? 'plus' : code === '=' || code === '/' ? 'minus' : 'zero'; // pass
+}
+
+const CODE_TEXT: Record<string, string> = { err: 'error', blk: 'blocked', play: 'in play', rec: 'recycle', kill: 'kill', '-': '−' };
+const codeText = (c: RatingCode) => CODE_TEXT[c] ?? c;
+
+const STEP_TITLE: Record<RallyStep, string> = {
+  our_serve: 'Our serve', opp_serve: 'Our pass', our_attack: 'Our attack', opp_attack: 'Their attack',
+};
+
+export default function RallyView({ gameState, setPending, commitRally, onSub, onUndo, onRotate, canUndo, court, onOpenLineup, trends }: RallyViewProps) {
+  const setNum = currentSetNumber(gameState);
   const stored = gameState.pending && gameState.pending.set === setNum ? gameState.pending : null;
   const rally: PendingRally | null = stored ?? (court.serving ? { ...freshRally(court.serving, setNum), id: `r-${setNum}-${gameState.events.length}` } : null);
 
   const [selected, setSelected] = useState<string | null>(null);
   const [showSubs, setShowSubs] = useState(false);
+  const [quickFor, setQuickFor] = useState<string | null>(null);
 
-  // Server = whoever stands in P1
   const serverSuggestion = rally?.step === 'our_serve' ? court.display[0] : null;
-
   const stepKey = rally ? `${rally.id}-${rally.step}-${rally.actions.length}-${rally.history.length}` : 'none';
-  useEffect(() => {
-    setSelected(serverSuggestion ?? null);
-  }, [stepKey, serverSuggestion]);
+  useEffect(() => { setSelected(serverSuggestion ?? null); }, [stepKey, serverSuggestion]);
 
   const nameOf = (id: string) => {
     const i = gameState.players.findIndex(p => p.id === id);
     return i >= 0 ? playerLabel(gameState.players[i], i) : '';
   };
 
-  const advance = (r: PendingRally, step: RallyStep, actions: StatEvent[]) => {
-    setPending({ ...r, step, actions, history: [...r.history, { step: r.step, actionCount: r.actions.length }] });
+  const trailOf = (r: PendingRally) => r.trail ?? [];
+  const advance = (r: PendingRally, step: RallyStep, actions: StatEvent[], crumb: string) => {
+    setPending({
+      ...r, step, actions, trail: [...trailOf(r), crumb],
+      history: [...r.history, { step: r.step, actionCount: r.actions.length, trailCount: trailOf(r).length }],
+    });
   };
 
-  const stat = (r: PendingRally, playerId: string, skill: Skill, grade: Grade, point: TeamSide | null, recycle = false): StatEvent => ({
-    kind: 'stat', id: uid('e'), rallyId: r.id, set: setNum, playerId, skill, grade, point, timestamp: Date.now(),
+  const stat = (r: PendingRally, playerId: string, skill: Skill, code: RatingCode, point: TeamSide | null): StatEvent => ({
+    kind: 'stat', id: uid('e'), rallyId: r.id, set: setNum, playerId, skill, code, grade: gradeFor(skill, code), point, timestamp: Date.now(),
     pos: positionOf(court, playerId) ?? undefined, rot: court.rotation ?? undefined,
-    ...(recycle ? { recycle: true } : {}),
+    ...(code === 'rec' ? { recycle: true } : {}),
   });
 
-  const endWithPoint = (r: PendingRally, team: TeamSide, reason: PointReason, extra: StatEvent[] = [], msg = '') => {
-    const pointEvent: MatchEvent = { kind: 'point', id: uid('e'), rallyId: r.id, set: setNum, team, reason, timestamp: Date.now() };
+  const endWithPoint = (r: PendingRally, team: TeamSide, reason: PointReason, extra: StatEvent[] = [], msg = '', playerId?: string) => {
+    const pointEvent: MatchEvent = { kind: 'point', id: uid('e'), rallyId: r.id, set: setNum, team, reason, timestamp: Date.now(), ...(playerId ? { playerId } : {}) };
     commitRally([...r.actions, ...extra, pointEvent], msg || (team === 'own' ? '+1 us' : '+1 them'));
   };
 
-  const endWithStat = (r: PendingRally, ev: StatEvent, msg: string) => {
-    commitRally([...r.actions, ev], msg);
-  };
-
-  const handleGrade = (grade: Grade) => {
-    if (!rally) return;
-    if (!selected) return;
+  const rateServe = (code: ScaleCode) => {
+    if (!rally || !selected) return;
     const who = nameOf(selected);
-    if (rally.step === 'our_serve') {
-      if (grade === 'plus') return endWithStat(rally, stat(rally, selected, 'serve', 'plus', 'own'), `${who} ace · +1 us`);
-      if (grade === 'minus') return endWithStat(rally, stat(rally, selected, 'serve', 'minus', 'opponent'), `${who} serve error · +1 them`);
-      return advance(rally, 'opp_attack', [...rally.actions, stat(rally, selected, 'serve', 'zero', null)]);
-    }
-    if (rally.step === 'opp_serve') {
-      // − pass = aced: rally over, point them
-      if (grade === 'minus') return endWithPoint(rally, 'opponent', 'opp_ace', [stat(rally, selected, 'pass', 'minus', null)], `${who} aced · +1 them`);
-      return advance(rally, 'our_attack', [...rally.actions, stat(rally, selected, 'pass', grade, null)]);
-    }
-    if (rally.step === 'our_attack') {
-      // Setter gets an attempt on every teammate attack, an assist on a kill
-      const setterId = setterFor(gameState, selected);
-      const setEv = setterId ? [stat(rally, setterId, 'set', grade, null)] : [];
-      const assist = setterId && grade === 'plus' ? ` · assist ${nameOf(setterId)}` : '';
-      if (grade === 'plus') return commitRally([...rally.actions, ...setEv, stat(rally, selected, 'attack', 'plus', 'own')], `${who} kill${assist} · +1 us`);
-      if (grade === 'minus') return commitRally([...rally.actions, ...setEv, stat(rally, selected, 'attack', 'minus', 'opponent')], `${who} attack error · +1 them`);
-      return advance(rally, 'opp_attack', [...rally.actions, ...setEv, stat(rally, selected, 'attack', 'zero', null)]);
-    }
+    if (code === '#') return commitRally([...rally.actions, stat(rally, selected, 'serve', code, 'own')], `${who} ace · +1 us`);
+    if (code === '=') return commitRally([...rally.actions, stat(rally, selected, 'serve', code, 'opponent')], `${who} serve error · +1 them`);
+    // Overpass = free ball: our attack next. Everything else: they attack.
+    advance(rally, code === '/' ? 'our_attack' : 'opp_attack', [...rally.actions, stat(rally, selected, 'serve', code, null)], `${who} serve ${codeText(code)}`);
   };
 
-  // Opponent recycle: ball stays on their side, they attack again
-  const handleOppRecycle = () => {
-    if (!rally || rally.step !== 'opp_attack') return;
-    advance(rally, 'opp_attack', rally.actions);
+  const ratePass = (code: ScaleCode) => {
+    if (!rally || !selected) return;
+    const who = nameOf(selected);
+    if (code === '=') return endWithPoint(rally, 'opponent', 'opp_ace', [stat(rally, selected, 'pass', code, null)], `${who} aced · +1 them`);
+    // Overpass = free ball for them
+    advance(rally, code === '/' ? 'opp_attack' : 'our_attack', [...rally.actions, stat(rally, selected, 'pass', code, null)], `${who} pass ${codeText(code)}`);
   };
 
-  // Recycle: attempt like a 0, but the ball stays on our side, so our attack again
-  const handleRecycle = () => {
-    if (!rally || !selected || rally.step !== 'our_attack') return;
+  const rateAttack = (code: AttackCode) => {
+    if (!rally || !selected) return;
+    const who = nameOf(selected);
+    // Setter gets an attempt on every teammate attack, an assist on a kill
     const setterId = setterFor(gameState, selected);
-    const setEv = setterId ? [stat(rally, setterId, 'set', 'zero', null)] : [];
-    advance(rally, 'our_attack', [...rally.actions, ...setEv, stat(rally, selected, 'attack', 'zero', null, true)]);
+    const setEv = setterId ? [stat(rally, setterId, 'set', code, null)] : [];
+    if (code === 'kill') {
+      const assist = setterId ? ` · assist ${nameOf(setterId)}` : '';
+      return commitRally([...rally.actions, ...setEv, stat(rally, selected, 'attack', code, 'own')], `${who} kill${assist} · +1 us`);
+    }
+    if (code === 'err' || code === 'blk') return commitRally([...rally.actions, ...setEv, stat(rally, selected, 'attack', code, 'opponent')], `${who} ${codeText(code)} · +1 them`);
+    advance(rally, code === 'rec' ? 'our_attack' : 'opp_attack', [...rally.actions, ...setEv, stat(rally, selected, 'attack', code, null)], `${who} attack ${codeText(code)}`);
   };
 
-  const handleOppAttack = (grade: Grade) => {
+  const rateOpp = (code: AttackCode) => {
     if (!rally) return;
-    if (grade === 'minus') return endWithPoint(rally, 'own', 'opp_attack_error', [], 'Opponent attack error · +1 us');
-    if (grade === 'plus') return endWithPoint(rally, 'opponent', 'opp_attack_point', [], 'Opponent kill · +1 them');
-    advance(rally, 'our_attack', rally.actions);
+    if (code === 'err') return endWithPoint(rally, 'own', 'opp_attack_error', [], 'Their attack error · +1 us');
+    if (code === 'blk') return endWithPoint(rally, 'own', 'opp_blocked', [], 'Our block · +1 us');
+    if (code === 'kill') return endWithPoint(rally, 'opponent', 'opp_attack_point', [], 'Their kill · +1 them');
+    advance(rally, code === 'rec' ? 'opp_attack' : 'our_attack', rally.actions, code === 'rec' ? 'Their recycle' : 'We dig');
   };
 
-  const handleOther = (team: TeamSide) => {
+  const theirFault = () => rally && endWithPoint(rally, 'own', rally.step === 'opp_serve' && rally.actions.length === 0 ? 'opp_serve_error' : 'other',
+    [], rally.step === 'opp_serve' && rally.actions.length === 0 ? 'Their serve error · +1 us' : 'Their fault · +1 us');
+  const ourFault = () => rally && endWithPoint(rally, 'opponent', 'other', [], 'Our fault · +1 them');
+  const replay = () => { setPending(null); };
+
+  const unforcedError = (playerId: string) => {
     if (!rally) return;
-    endWithPoint(rally, team, 'other');
+    endWithPoint(rally, 'opponent', 'own_error', [], `${nameOf(playerId)} unforced error · +1 them`, playerId);
+    setQuickFor(null);
   };
 
-  // Eligible players per step
   const isEligible = (step: RallyStep, p: Player) =>
     step === 'our_serve' ? p.role !== 'libero' :
     step === 'opp_serve' ? p.role !== 'setter' :
     step === 'our_attack' ? p.role !== 'libero' : false;
 
   const used = subsUsed(gameState.events, setNum);
+  const own = rally ? rally.step !== 'opp_attack' : true;
 
-  const gradeButtons = (labels: [string, string, string]) => (
-    <div className="grid grid-cols-3 gap-2">
-      {(['minus', 'zero', 'plus'] as Grade[]).map((g, i) => (
-        <button key={g} onClick={() => handleGrade(g)} disabled={!selected}
-          className={`py-5 rounded-2xl font-black uppercase transition-all active:scale-90 disabled:opacity-25 ${
-            g === 'minus' ? 'bg-danger text-white' : g === 'zero' ? 'bg-white/10 text-white border border-white/20' : 'bg-success text-black'
-          }`}>
-          <span className="block text-2xl leading-none">{GRADE_LABEL[g]}</span>
-          <span className="block text-[9px] tracking-wider mt-1 opacity-80">{labels[i]}</span>
-        </button>
-      ))}
-    </div>
-  );
-
-  // Players laid out like the court: front row P4 P3 P2, back row P5 P6 P1
-  const playerGrid = (step: RallyStep) => (
-    <div className="space-y-2">
-      {COURT_LAYOUT.map((row, r) => (
-        <div key={r} className="grid grid-cols-3 gap-2">
-          {row.map(pos => {
-            const id = court.display[pos - 1];
-            const i = gameState.players.findIndex(p => p.id === id);
-            const p = i >= 0 ? gameState.players[i] : null;
-            const ok = p ? isEligible(step, p) : false;
-            return (
-              <button key={pos} onClick={() => p && ok && setSelected(p.id)} disabled={!ok}
-                className={`min-h-[60px] rounded-2xl px-2.5 py-2 text-left border-2 transition-all active:scale-95 disabled:opacity-20 ${
-                  p && selected === p.id ? 'border-primary bg-primary/15' : p?.role === 'libero' ? 'border-accent/30 bg-accent/5' : 'border-white/10 bg-white/5'
-                }`}>
-                <span className="block text-[9px] font-mono font-bold text-white/30">P{pos}</span>
-                <span className={`block font-black italic uppercase leading-tight text-sm truncate ${p && selected === p.id ? 'text-primary' : ''}`}>{p ? playerLabel(p, i) : '–'}</span>
-                {p && <span className="block text-[9px] font-bold uppercase tracking-wider text-white/30">{ROLE_SHORT[p.role]}</span>}
-              </button>
-            );
-          })}
-        </div>
-      ))}
-    </div>
-  );
-
-  // Breadcrumb of the rally so far
-  const crumbs: string[] = [];
-  if (rally) {
-    crumbs.push(rally.servingTeam === 'own' ? 'We serve' : 'They serve');
-    rally.actions.filter(a => a.skill !== 'set').forEach(a => crumbs.push(`${nameOf(a.playerId)} ${a.skill} ${a.recycle ? 'recycle' : GRADE_LABEL[a.grade]}`));
-  }
+  const crumbs = rally ? [rally.servingTeam === 'own' ? 'We serve' : 'They serve', ...trailOf(rally)] : [];
 
   return (
-    <div className="flex-1 flex flex-col p-4 sm:p-6 overflow-y-auto pb-32 gap-4">
-      {/* Top row */}
-      <div className="flex items-center justify-between gap-2">
-        <button onClick={onUndo} disabled={!canUndo}
-          className="text-[10px] font-bold uppercase text-primary border border-primary/30 px-3 py-1.5 rounded-lg active:scale-95 flex items-center gap-1 disabled:opacity-30">
-          <RotateCcw className="w-3 h-3" /> Undo
-        </button>
-        <button onClick={() => setShowSubs(true)}
-          className={`text-[10px] font-bold uppercase px-3 py-1.5 rounded-lg border flex items-center gap-1 active:scale-95 ${used >= gameState.subLimit ? 'text-danger border-danger/30' : 'text-white/60 border-white/10'}`}>
-          <ArrowLeftRight className="w-3 h-3" /> Subs {used}/{gameState.subLimit}
-        </button>
-      </div>
-
-      <CourtMini players={gameState.players} court={court} onOpen={onOpenLineup} />
-
-      {/* Breadcrumb */}
-      {crumbs.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {crumbs.map((c, i) => (
-            <span key={i} className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md ${i === 0 ? (rally!.servingTeam === 'own' ? 'bg-primary/20 text-primary' : 'bg-secondary/20 text-secondary') : 'bg-white/5 text-white/60'}`}>
-              {c}
-            </span>
+    <div className="flex-1 min-h-0 flex flex-col lg:grid lg:grid-cols-[minmax(280px,30%)_1fr_minmax(240px,24%)]">
+      {/* COURT */}
+      <section className="flex flex-col gap-4 p-4 lg:p-5 border-b lg:border-b-0 lg:border-r border-line">
+        <div className="flex items-center justify-between">
+          <button onClick={onOpenLineup} className="font-display text-lg font-bold tracking-[0.08em] uppercase text-ink">
+            {court.rotation ? `R${court.rotation}` : 'Lineup'}
+          </button>
+          <div className="flex gap-1.5">
+            <button onClick={() => onRotate(-1)} aria-label="Rotate back" className="h-8 px-2 rounded-md border border-line text-mute font-display font-bold text-xs flex items-center gap-1"><RotateCcw className="w-3.5 h-3.5" />−1</button>
+            <button onClick={() => onRotate(1)} aria-label="Rotate forward" className="h-8 px-2 rounded-md border border-line text-mute font-display font-bold text-xs flex items-center gap-1"><RotateCw className="w-3.5 h-3.5" />+1</button>
+          </div>
+        </div>
+        <div className="border-t-[3px] border-ink pt-3 space-y-3">
+          {COURT_LAYOUT.map((row, r) => (
+            <div key={r} className={`grid grid-cols-3 gap-2 ${r === 1 ? 'pt-3 border-t border-dashed border-line' : ''}`}>
+              {row.map(pos => {
+                const id = court.display[pos - 1];
+                const i = gameState.players.findIndex(p => p.id === id);
+                const p = i >= 0 ? gameState.players[i] : null;
+                const ok = !!(p && rally && isEligible(rally.step, p));
+                return (
+                  <CourtSlot key={pos} pos={pos} player={p} label={p ? (p.name.trim() || playerLabel(p, i)) : '–'} selected={!!p && selected === p.id}
+                    dimmed={!!rally && rally.step !== 'opp_attack' && !ok}
+                    onTap={() => { if (!p) return; if (ok) setSelected(p.id); else setQuickFor(p.id); }}
+                    onLong={() => p && setQuickFor(p.id)} />
+                );
+              })}
+            </div>
           ))}
         </div>
-      )}
+        <p className="text-[11px] text-mute font-display tracking-[0.08em] uppercase">Hold a player for error or sub</p>
+        <div className="mt-auto grid grid-cols-2 gap-2">
+          <button onClick={onUndo} disabled={!canUndo} className="h-11 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center justify-center gap-1.5 disabled:opacity-30"><Undo2 className="w-4 h-4" /> Undo</button>
+          <button onClick={() => setShowSubs(true)} className={`h-11 rounded-lg border font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center justify-center gap-1.5 ${used >= gameState.subLimit ? 'border-bad text-bad' : 'border-line'}`}><ArrowLeftRight className="w-4 h-4" /> Sub {used}/{gameState.subLimit}</button>
+        </div>
+      </section>
 
-      <AnimatePresence mode="wait">
+      {/* PHASE PANEL */}
+      <section className={`flex flex-col p-4 lg:p-6 border-t-[3px] ${own ? 'border-t-primary' : 'border-t-secondary bg-[#1C1A24]'}`}>
         {!rally ? (
-          <motion.div key="nolineup" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex-1 flex flex-col justify-center gap-3">
-            <button onClick={onOpenLineup}
-              className="h-28 rounded-2xl bg-primary text-black font-black uppercase italic tracking-tighter text-2xl active:scale-95 transition-all">Set lineup for set {setNum}</button>
-          </motion.div>
+          <div className="flex-1 flex items-center justify-center">
+            <button onClick={onOpenLineup} className="h-20 px-10 rounded-xl bg-primary text-[#0D0F12] font-display font-bold tracking-[0.12em] uppercase text-xl">Set lineup for set {setNum}</button>
+          </div>
         ) : (
-          <motion.div key={stepKey} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-4">
-            <h3 className="text-xs font-bold text-white/40 uppercase tracking-widest">{STEP_TITLE[rally.step]}</h3>
-
-            {rally.step === 'opp_serve' && (
-              <button onClick={() => endWithPoint(rally, 'own', 'opp_serve_error', [], 'Opponent service error · +1 us')}
-                className="w-full py-4 rounded-2xl bg-primary text-black font-black uppercase tracking-tight text-sm active:scale-95 transition-all">
-                Service error opponent <span className="opacity-60 text-[10px] ml-1">+1 us · we serve</span>
-              </button>
-            )}
-
-            {rally.step === 'opp_attack' ? (
-              <div className="grid grid-cols-4 gap-2">
-                {([
-                  ['−', 'Error', '+1 us', 'bg-danger text-white', () => handleOppAttack('minus')],
-                  ['↺', 'Recycle', 'Their attack', 'bg-accent text-black', handleOppRecycle],
-                  ['0', '0', 'Our attack', 'bg-white/10 text-white border border-white/20', () => handleOppAttack('zero')],
-                  ['#', 'Kill', '+1 them', 'bg-success text-black', () => handleOppAttack('plus')],
-                ] as [string, string, string, string, () => void][]).map(([sym, label, sub, cls, fn]) => (
-                  <button key={label} onClick={fn}
-                    className={`py-5 rounded-2xl font-black uppercase transition-all active:scale-90 ${cls}`}>
-                    <span className="block text-2xl leading-none">{sym}</span>
-                    <span className="block text-[10px] tracking-wider mt-1">{label}</span>
-                    <span className="block text-[8px] tracking-wider opacity-70">{sub}</span>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <>
-                {playerGrid(rally.step)}
-                {rally.step === 'our_serve' && gradeButtons(['Error', 'In play', 'Ace'])}
-                {rally.step === 'opp_serve' && gradeButtons(['Aced · +1 them', 'OK', 'Perfect'])}
-                {rally.step === 'our_attack' && (
-                  <div className="grid grid-cols-4 gap-2">
-                    {([
-                      ['−', 'Error', 'bg-danger text-white', () => handleGrade('minus')],
-                      ['↺', 'Recycle', 'bg-accent text-black', handleRecycle],
-                      ['0', 'In play', 'bg-white/10 text-white border border-white/20', () => handleGrade('zero')],
-                      ['#', 'Kill', 'bg-success text-black', () => handleGrade('plus')],
-                    ] as [string, string, string, () => void][]).map(([sym, label, cls, fn]) => (
-                      <button key={label} onClick={fn} disabled={!selected}
-                        className={`py-5 rounded-2xl font-black uppercase transition-all active:scale-90 disabled:opacity-25 ${cls}`}>
-                        <span className="block text-2xl leading-none">{sym}</span>
-                        <span className="block text-[9px] tracking-wider mt-1 opacity-80">{label}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {!selected && <p className="text-[10px] text-white/30 text-center uppercase tracking-wider">Pick a player, then rate</p>}
-              </>
-            )}
-
-            {/* Points the flow doesn't cover: blocks, net faults, overpasses */}
-            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-white/5">
-              <button onClick={() => handleOther('own')}
-                className="py-3 rounded-xl border border-primary/30 text-primary font-bold uppercase text-[10px] tracking-wider active:scale-95 transition-all">
-                Point us (other)
-              </button>
-              <button onClick={() => handleOther('opponent')}
-                className="py-3 rounded-xl border border-secondary/30 text-secondary font-bold uppercase text-[10px] tracking-wider active:scale-95 transition-all">
-                Point them (other)
-              </button>
+          <>
+            <h2 className={`font-display text-3xl font-bold tracking-[0.06em] uppercase ${own ? 'text-primary' : 'text-secondary'}`}>{STEP_TITLE[rally.step]}</h2>
+            <div className="flex flex-wrap gap-x-2 gap-y-1 mt-1 font-display text-sm font-semibold tracking-[0.1em] uppercase text-mute">
+              {crumbs.map((c, i) => <span key={i}>{i > 0 && <span className="mr-2 opacity-50">/</span>}{c}</span>)}
             </div>
-          </motion.div>
+            <div className="flex-1 flex flex-col justify-center py-6">
+              <AnimatePresence mode="wait">
+                <motion.div key={stepKey} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }}>
+                  {rally.step === 'our_serve' && <Scale items={SERVE_SCALE} cols={3} disabled={!selected} onPick={rateServe} />}
+                  {rally.step === 'opp_serve' && <Scale items={PASS_SCALE} cols={3} disabled={!selected} onPick={ratePass} />}
+                  {rally.step === 'our_attack' && <Scale items={ATTACK_SCALE} cols={5} disabled={!selected} onPick={rateAttack} />}
+                  {rally.step === 'opp_attack' && <Scale items={OPP_ATTACK_SCALE} cols={5} disabled={false} onPick={rateOpp} />}
+                  {rally.step !== 'opp_attack' && !selected && (
+                    <p className="mt-3 text-center font-display text-xs font-semibold tracking-[0.12em] uppercase text-mute">Tap the player on the court</p>
+                  )}
+                </motion.div>
+              </AnimatePresence>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <button onClick={theirFault} className="h-11 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-sm">Their fault</button>
+              <button onClick={ourFault} className="h-11 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-sm">Our fault</button>
+              <button onClick={replay} className="h-11 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center justify-center gap-1.5"><RotateCcw className="w-4 h-4" /> Replay</button>
+            </div>
+          </>
         )}
-      </AnimatePresence>
+      </section>
 
-      {/* SUB SHEET */}
+      {/* ALERTS (attack board arrives in stage 3) */}
+      <aside className="hidden lg:flex flex-col gap-3 p-5 border-l border-line">
+        <span className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">Alerts</span>
+        {trends.length === 0 && <span className="text-sm text-mute">Nothing yet.</span>}
+        {trends.slice(0, 3).map((t, i) => (
+          <div key={i} className="flex gap-2 text-sm leading-snug">
+            <span className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${t.tone === 'info' ? 'bg-good' : t.tone === 'alert' ? 'bg-bad' : 'bg-mute'}`} />
+            <span>{t.message}</span>
+          </div>
+        ))}
+      </aside>
+
       <AnimatePresence>
         {showSubs && <SubSheet players={gameState.players} courtIds={court.positions} onClose={() => setShowSubs(false)} onSub={onSub} used={used} limit={gameState.subLimit} />}
+        {quickFor && (
+          <QuickSheet key="quick" player={gameState.players.find(p => p.id === quickFor)!} pos={positionOf(court, quickFor)}
+            label={nameOf(quickFor)} players={gameState.players} courtIds={court.positions} canError={!!rally}
+            used={used} limit={gameState.subLimit}
+            onError={() => unforcedError(quickFor)} onSub={inId => { onSub(inId, quickFor); setQuickFor(null); }} onClose={() => setQuickFor(null)} />
+        )}
       </AnimatePresence>
     </div>
   );
 }
 
 export function freshRally(servingTeam: TeamSide, set: number): PendingRally {
-  return {
-    id: uid('r'), set, servingTeam,
-    step: servingTeam === 'own' ? 'our_serve' : 'opp_serve',
-    actions: [], history: [],
-  };
+  return { id: uid('r'), set, servingTeam, step: servingTeam === 'own' ? 'our_serve' : 'opp_serve', actions: [], trail: [], history: [] };
+}
+
+// ---------- Pieces ----------
+
+export function InfoDot({ text, light }: { text: string; light?: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="relative inline-flex">
+      <span role="button" tabIndex={0} aria-label="Info"
+        onClick={e => { e.stopPropagation(); setOpen(o => !o); }}
+        onPointerDown={e => e.stopPropagation()}
+        className={`w-[18px] h-[18px] rounded-full border flex items-center justify-center text-[11px] italic font-bold font-serif cursor-pointer ${light ? 'border-white/60 text-white/80' : 'border-black/40 text-black/60'}`}>i</span>
+      {open && (
+        <span onClick={e => { e.stopPropagation(); setOpen(false); }}
+          className="absolute right-0 bottom-[calc(100%+8px)] z-20 w-52 rounded-lg bg-ink text-[#0B0C0E] px-3 py-2 text-[13px] font-bold leading-snug shadow-2xl normal-case tracking-normal text-left font-sans">{text}</span>
+      )}
+    </span>
+  );
+}
+
+function Scale<C extends RatingCode>({ items, cols, disabled, onPick }: { items: ScaleItem<C>[]; cols: 3 | 5; disabled: boolean; onPick: (c: C) => void }) {
+  return (
+    <div className={`grid gap-2 ${cols === 3 ? 'grid-cols-3' : 'grid-cols-5'}`}>
+      {items.map(it => {
+        const light = it.tone === 'poor' || it.tone === 'neu' || it.tone === 'top';
+        return (
+          <div key={it.code} className="relative">
+            <button onClick={() => onPick(it.code)} disabled={disabled} data-code={it.code}
+              className={`w-full ${cols === 3 ? 'h-28 lg:h-32' : 'h-28 lg:h-36'} rounded-xl flex flex-col items-center justify-center gap-1.5 transition-transform active:scale-95 disabled:opacity-30 ${TONE_CLASS[it.tone]}`}>
+              <span className={`font-display font-bold leading-[0.9] ${cols === 3 ? 'text-5xl' : 'text-[44px]'}`}>{it.sym}</span>
+              <span className={`font-display font-bold uppercase ${cols === 3 ? 'text-[15px] tracking-[0.12em]' : 'text-[13px] tracking-[0.06em]'}`}>{it.label}</span>
+            </button>
+            <span className="absolute top-2 right-2"><InfoDot text={it.info} light={light} /></span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CourtSlot({ pos, player, label, selected, dimmed, onTap, onLong }: {
+  pos: number; player: Player | null; label: string; selected: boolean; dimmed: boolean; onTap: () => void; onLong: () => void;
+}) {
+  const timer = useRef<number | undefined>(undefined);
+  const longFired = useRef(false);
+  const start = () => { longFired.current = false; timer.current = window.setTimeout(() => { longFired.current = true; onLong(); }, 450); };
+  const cancel = () => window.clearTimeout(timer.current);
+  const libero = player?.role === 'libero';
+  return (
+    <button
+      onPointerDown={start} onPointerUp={cancel} onPointerLeave={cancel} onContextMenu={e => e.preventDefault()}
+      onClick={() => { if (!longFired.current) onTap(); }}
+      className={`h-20 lg:h-24 rounded-lg flex flex-col items-center justify-center gap-0.5 px-1 transition-all select-none ${
+        selected ? 'border-[1.5px] border-primary bg-primary/10' : libero ? 'border border-dashed border-mute' : 'border border-line'
+      } ${dimmed ? 'opacity-35' : ''}`}>
+      <span className="font-display text-[11px] font-semibold tracking-[0.1em] text-mute">P{pos}</span>
+      <span className={`font-display text-lg lg:text-xl font-bold uppercase leading-none truncate max-w-full ${selected ? 'text-primary' : ''}`}>{label}</span>
+      {player && <span className="font-display text-[11px] font-semibold tracking-[0.1em] text-mute">{player.name.trim() && player.number.trim() ? `#${player.number.trim()} · ` : ''}{ROLE_SHORT[player.role]}</span>}
+    </button>
+  );
+}
+
+function Sheet({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-[150] flex items-end sm:items-center justify-center bg-black/70" onClick={onClose}>
+      <motion.div initial={{ y: 40, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 40, opacity: 0 }} transition={{ duration: 0.15 }}
+        onClick={e => e.stopPropagation()}
+        className="bg-surface border border-line p-5 rounded-t-2xl sm:rounded-2xl w-full max-w-md shadow-2xl max-h-[85dvh] overflow-y-auto space-y-4">
+        {children}
+      </motion.div>
+    </div>
+  );
+}
+
+function QuickSheet({ player, pos, label, players, courtIds, canError, used, limit, onError, onSub, onClose }: {
+  player: Player; pos: number | null; label: string; players: Player[]; courtIds: (string | null)[]; canError: boolean;
+  used: number; limit: number; onError: () => void; onSub: (inId: string) => void; onClose: () => void;
+}) {
+  const bench = players.map((p, i) => ({ p, i })).filter(x => x.p.role !== 'libero' && !courtIds.includes(x.p.id));
+  const sorted = [...bench.filter(x => x.p.role === player.role), ...bench.filter(x => x.p.role !== player.role)];
+  const subsOpen = player.role !== 'libero' && used < limit;
+  return (
+    <Sheet onClose={onClose}>
+      <div className="flex justify-between items-start">
+        <div>
+          <div className="font-display text-3xl font-bold uppercase tracking-[0.04em] leading-none">{label}</div>
+          <div className="font-display text-xs font-semibold tracking-[0.12em] text-mute mt-1">{ROLE_SHORT[player.role]}{pos ? ` · P${pos}` : ''}</div>
+        </div>
+        <button onClick={onClose} aria-label="Close" className="w-10 h-10 rounded-lg border border-line flex items-center justify-center"><X className="w-5 h-5" /></button>
+      </div>
+      <div className="relative">
+        <button onClick={onError} disabled={!canError}
+          className={`w-full h-16 rounded-xl font-display text-lg font-bold tracking-[0.12em] uppercase disabled:opacity-30 ${TONE_CLASS.poor}`}>Unforced error</button>
+        <span className="absolute top-[23px] right-3.5"><InfoDot light text="Net touch, foot fault, double contact. +1 them. Pass and attacks so far stay recorded." /></span>
+      </div>
+      {player.role !== 'libero' && (
+        <>
+          <div className="flex justify-between items-center">
+            <span className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">Sub · {used}/{limit}</span>
+            <InfoDot light text="Same role first (orange)." />
+          </div>
+          {!subsOpen && <p className="text-sm text-bad">Sub limit reached.</p>}
+          <div className="grid grid-cols-2 gap-2">
+            {sorted.map(({ p, i }) => (
+              <button key={p.id} onClick={() => onSub(p.id)} disabled={!subsOpen}
+                className={`h-14 rounded-lg text-left px-3.5 flex flex-col justify-center disabled:opacity-30 ${p.role === player.role ? 'border-[1.5px] border-primary' : 'border border-line'}`}>
+                <span className="font-display text-lg font-bold uppercase leading-tight truncate">{playerLabel(p, i)}</span>
+                <span className="font-display text-[11px] font-semibold tracking-[0.1em] text-mute">{ROLE_SHORT[p.role]}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </Sheet>
+  );
 }
 
 function SubSheet({ players, courtIds, onClose, onSub, used, limit }: {
   players: Player[]; courtIds: (string | null)[]; onClose: () => void; onSub: (inId: string, outId: string) => void; used: number; limit: number;
 }) {
   const [outId, setOutId] = useState<string | null>(null);
-  // Liberos swap automatically, so they're not part of regular subs
   const indexed = players.map((p, i) => ({ p, i })).filter(x => x.p.role !== 'libero');
   const court = courtIds.map((id, k) => ({ id, pos: k + 1 })).filter(x => x.id).map(x => ({ ...indexed.find(y => y.p.id === x.id)!, pos: x.pos })).filter(x => x.p);
   const bench = indexed.filter(x => !courtIds.includes(x.p.id));
-  const btn = (p: Player, i: number, active: boolean, onClick: () => void, disabled = false) => (
+  const outRole = players.find(p => p.id === outId)?.role;
+  const btn = (p: Player, i: number, active: boolean, onClick: () => void, disabled = false, hint = false) => (
     <button key={p.id} onClick={onClick} disabled={disabled}
-      className={`w-full text-left px-3 py-2.5 rounded-xl border-2 transition-all active:scale-95 disabled:opacity-30 ${active ? 'border-primary bg-primary/15' : 'border-white/10 bg-white/5'}`}>
-      <span className="block font-black italic uppercase text-sm truncate">{playerLabel(p, i)}</span>
-      <span className="block text-[9px] font-bold uppercase tracking-wider text-white/30">{ROLE_LABEL[p.role]}</span>
+      className={`w-full text-left px-3 py-2.5 rounded-lg transition-all disabled:opacity-30 ${active ? 'border-[1.5px] border-primary bg-primary/10' : hint ? 'border-[1.5px] border-primary' : 'border border-line'}`}>
+      <span className="block font-display font-bold uppercase text-base truncate">{playerLabel(p, i)}</span>
+      <span className="block font-display text-[11px] font-semibold tracking-[0.1em] text-mute">{ROLE_LABEL[p.role]}</span>
     </button>
   );
   return (
-    <div className="fixed inset-0 z-[150] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-xl" onClick={onClose}>
-      <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 100, opacity: 0 }}
-        onClick={e => e.stopPropagation()}
-        className="bg-surface border border-white/10 p-5 rounded-t-3xl sm:rounded-3xl w-full max-w-md shadow-2xl max-h-[85dvh] overflow-y-auto space-y-4">
-        <div className="flex justify-between items-center">
-          <div>
-            <h3 className="text-lg font-black italic uppercase tracking-tight">Substitution</h3>
-            <p className="text-[10px] uppercase tracking-widest text-white/40">{outId ? 'Now tap who comes in' : 'Tap who goes out'} · {used}/{limit} used</p>
-          </div>
-          <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full"><X className="w-5 h-5" /></button>
+    <Sheet onClose={onClose}>
+      <div className="flex justify-between items-center">
+        <div>
+          <h3 className="font-display text-2xl font-bold uppercase tracking-[0.04em]">Sub</h3>
+          <p className="font-display text-xs font-semibold tracking-[0.12em] uppercase text-mute">{outId ? 'Who comes in?' : 'Who goes out?'} · {used}/{limit}</p>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-2">
-            <div className="text-[10px] uppercase tracking-widest font-bold text-white/30">Out (court)</div>
-            {court.map(({ p, i, pos }) => <div key={p.id} className="relative">{btn(p, i, outId === p.id, () => setOutId(outId === p.id ? null : p.id))}<span className="absolute top-2 right-2 text-[9px] font-mono text-white/30">P{pos}</span></div>)}
-          </div>
-          <div className="space-y-2">
-            <div className="text-[10px] uppercase tracking-widest font-bold text-white/30">In (bench)</div>
-            {bench.length === 0 && <div className="text-[10px] text-white/30">Bench empty</div>}
-            {bench.map(({ p, i }) => btn(p, i, false, () => { if (outId) { onSub(p.id, outId); setOutId(null); onClose(); } }, !outId))}
-          </div>
+        <button onClick={onClose} aria-label="Close" className="w-10 h-10 rounded-lg border border-line flex items-center justify-center"><X className="w-5 h-5" /></button>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-2">
+          <div className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">Out</div>
+          {court.map(({ p, i, pos }) => <div key={p.id} className="relative">{btn(p, i, outId === p.id, () => setOutId(outId === p.id ? null : p.id))}<span className="absolute top-2 right-2 font-display text-[11px] text-mute">P{pos}</span></div>)}
         </div>
-      </motion.div>
-    </div>
+        <div className="space-y-2">
+          <div className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">In</div>
+          {bench.length === 0 && <div className="text-sm text-mute">Bench empty</div>}
+          {bench.map(({ p, i }) => btn(p, i, false, () => { if (outId) { onSub(p.id, outId); setOutId(null); onClose(); } }, !outId || used >= limit, !!outRole && p.role === outRole))}
+        </div>
+      </div>
+    </Sheet>
   );
 }
