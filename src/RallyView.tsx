@@ -107,7 +107,7 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
   const trailOf = (r: PendingRally) => r.trail ?? [];
   const advance = (r: PendingRally, step: RallyStep, actions: StatEvent[], crumb: string) => {
     setPending({
-      ...r, step, actions, trail: [...trailOf(r), crumb],
+      ...r, step, actions, trail: [...trailOf(r), crumb], lastAt: Date.now(),
       history: [...r.history, { step: r.step, actionCount: r.actions.length, trailCount: trailOf(r).length }],
     });
   };

@@ -75,7 +75,18 @@ export interface RotateEvent {
   timestamp: number;
 }
 
-export type MatchEvent = StatEvent | PointEvent | SubEvent | RotateEvent;
+export interface TimeoutEvent {
+  kind: 'timeout';
+  id: string;
+  rallyId?: string;
+  set: number;
+  team: TeamSide;
+  timestamp: number;
+}
+
+export const TIMEOUTS_PER_SET = 2;
+
+export type MatchEvent = StatEvent | PointEvent | SubEvent | RotateEvent | TimeoutEvent;
 
 // Starting lineup for one set. positions[0] = P1 ... positions[5] = P6
 export interface SetLineup {
@@ -94,6 +105,7 @@ export interface PendingRally {
   step: RallyStep;
   actions: StatEvent[]; // not yet committed (e.g. a pass before the attack)
   trail?: string[]; // breadcrumb, incl. opponent actions
+  lastAt?: number; // time of the last step (Undo order vs timeouts/subs)
   history: { step: RallyStep; actionCount: number; trailCount?: number }[];
 }
 

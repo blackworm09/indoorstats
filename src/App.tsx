@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { XCircle, Trophy, Plus, Trash2, Minus, Maximize } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { GameState, MatchEvent, PendingRally, Player, Role, TeamSide, ROLE_LABEL, ROLE_SHORT, ROLES, SetLineup } from './types';
+import { GameState, MatchEvent, PendingRally, Player, Role, TeamSide, ROLE_LABEL, ROLE_SHORT, ROLES, SetLineup, TIMEOUTS_PER_SET } from './types';
 import {
   calculateStats, currentSetNumber, formatMatchDate, getSetLimit, isSetWon,
   playerLabel, scoreForSet, SETS_TO_WIN, formatValue, detectTrends, rotationTable, statsByPosition,
@@ -104,6 +104,12 @@ export default function App() {
     flash(`Set ${setNum} lineup saved`);
   };
 
+  const timeoutsUsed = (team: TeamSide) => currentSetEvents.filter(e => e.kind === 'timeout' && e.team === team).length;
+  const callTimeout = (team: TeamSide) => {
+    if (matchOver || timeoutsUsed(team) >= TIMEOUTS_PER_SET) return;
+    pushEvent({ kind: 'timeout', id: uid('e'), set: setNum, team, timestamp: Date.now() });
+  };
+
   const rotateCourt = (delta: number) => {
     pushEvent({ kind: 'rotate', id: uid('e'), set: setNum, delta, timestamp: Date.now() });
     flash(delta > 0 ? 'Rotated forward' : 'Rotated back');
@@ -139,15 +145,17 @@ export default function App() {
   const handleUndo = () => {
     setGameState(prev => {
       const s = currentSetNumber(prev);
-      // Rally mode: step back inside the rally in progress first
-      const p = prev.pending && prev.pending.set === s ? prev.pending : null;
-      if (p && p.history.length > 0) {
-        const h = p.history[p.history.length - 1];
-        return { ...prev, pending: { ...p, step: h.step, actions: p.actions.slice(0, h.actionCount), history: p.history.slice(0, -1) } };
-      }
       let lastIdx = -1;
       for (let i = prev.events.length - 1; i >= 0; i--) {
         if (prev.events[i].set === s) { lastIdx = i; break; }
+      }
+      const lastEv = lastIdx >= 0 ? prev.events[lastIdx] : null;
+      const sideEvent = !!lastEv && (lastEv.kind === 'sub' || lastEv.kind === 'rotate' || lastEv.kind === 'timeout');
+      // Step back inside the rally in progress, unless a timeout/sub/rotation happened after its last step
+      const p = prev.pending && prev.pending.set === s ? prev.pending : null;
+      if (p && p.history.length > 0 && !(sideEvent && lastEv!.timestamp > (p.lastAt ?? 0))) {
+        const h = p.history[p.history.length - 1];
+        return { ...prev, pending: { ...p, step: h.step, actions: p.actions.slice(0, h.actionCount), trail: (p.trail ?? []).slice(0, h.trailCount ?? 0), history: p.history.slice(0, -1) } };
       }
       if (lastIdx < 0) return p ? { ...prev, pending: null } : prev;
       const last = prev.events[lastIdx];
@@ -155,7 +163,7 @@ export default function App() {
       const events = last.rallyId
         ? prev.events.filter(e => e.rallyId !== last.rallyId)
         : prev.events.filter((_, i) => i !== lastIdx);
-      const keepPending = last.kind === 'sub' || last.kind === 'rotate';
+      const keepPending = last.kind === 'sub' || last.kind === 'rotate' || last.kind === 'timeout';
       return { ...prev, events, pending: keepPending ? prev.pending : null };
     });
     flash('Undone');
@@ -279,6 +287,16 @@ export default function App() {
           <span className="font-display text-[11px] font-bold tracking-[0.14em] text-secondary hidden sm:inline">THEM</span>
           <span className="font-display text-[11px] font-semibold tracking-[0.12em] text-mute ml-2 hidden md:inline">SET {matchOver ? '–' : setNum} · {gameState.sets.own}–{gameState.sets.opponent} · TO {setLimit}</span>
         </div>
+        {(['own', 'opponent'] as TeamSide[]).map(team => {
+          const n = timeoutsUsed(team);
+          return (
+            <button key={team} onClick={() => callTimeout(team)} disabled={matchOver || n >= TIMEOUTS_PER_SET}
+              aria-label={team === 'own' ? 'Our timeout' : 'Their timeout'}
+              className={`h-9 px-2.5 rounded-md border font-display font-bold tracking-[0.1em] uppercase text-xs whitespace-nowrap disabled:opacity-35 ${team === 'own' ? 'border-primary/50 text-primary' : 'border-secondary/50 text-secondary'}`}>
+              TO {n}/{TIMEOUTS_PER_SET}
+            </button>
+          );
+        })}
         <button onClick={manualEndSet} disabled={matchOver}
           className="h-9 px-3 rounded-md border border-line font-display font-bold tracking-[0.1em] uppercase text-xs whitespace-nowrap disabled:opacity-30">End set</button>
         <button onClick={() => { try { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); } catch { /* not supported */ } }}
