@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowLeftRight, RotateCcw, RotateCw, Undo2, X } from 'lucide-react';
 import {
   AttackCode, GameState, Grade, MatchEvent, PendingRally, Player, PointReason, RallyStep, RatingCode, ScaleCode, Skill, StatEvent, TeamSide,
   ROLE_LABEL, ROLE_SHORT, COURT_LAYOUT,
 } from './types';
-import { currentSetNumber, playerLabel, setterFor, subsUsed, Trend } from './utils';
+import { currentSetNumber, playerLabel, setterFor, subsUsed } from './utils';
+import { attackBoard, computeAlerts, EffLine, N_MIN } from './alerts';
 import { CourtState, positionOf } from './court';
 
 interface RallyViewProps {
@@ -18,7 +19,6 @@ interface RallyViewProps {
   canUndo: boolean;
   court: CourtState;
   onOpenLineup: () => void;
-  trends: Trend[];
 }
 
 const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -86,7 +86,7 @@ const STEP_TITLE: Record<RallyStep, string> = {
   our_serve: 'Our serve', opp_serve: 'Our pass', our_attack: 'Our attack', opp_attack: 'Their attack',
 };
 
-export default function RallyView({ gameState, setPending, commitRally, onSub, onUndo, onRotate, canUndo, court, onOpenLineup, trends }: RallyViewProps) {
+export default function RallyView({ gameState, setPending, commitRally, onSub, onUndo, onRotate, canUndo, court, onOpenLineup }: RallyViewProps) {
   const setNum = currentSetNumber(gameState);
   const stored = gameState.pending && gameState.pending.set === setNum ? gameState.pending : null;
   const rally: PendingRally | null = stored ?? (court.serving ? { ...freshRally(court.serving, setNum), id: `r-${setNum}-${gameState.events.length}` } : null);
@@ -179,6 +179,8 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
     step === 'our_attack' ? p.role !== 'libero' : false;
 
   const used = subsUsed(gameState.events, setNum);
+  const alerts = useMemo(() => computeAlerts(gameState, court.rotation).slice(0, 3), [gameState, court.rotation]);
+  const board = useMemo(() => attackBoard(gameState, court.rotation, court.display), [gameState, court.rotation, court.display]);
   const own = rally ? rally.step !== 'opp_attack' : true;
 
   const crumbs = rally ? [rally.servingTeam === 'own' ? 'We serve' : 'They serve', ...trailOf(rally)] : [];
@@ -234,8 +236,8 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
               {crumbs.map((c, i) => <span key={i}>{i > 0 && <span className="mr-2 opacity-50">/</span>}{c}</span>)}
             </div>
             <div className="flex-1 flex flex-col justify-center py-6">
-              <AnimatePresence mode="wait">
-                <motion.div key={stepKey} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }}>
+              {/* No exit animation: old buttons must never stay tappable after a step change */}
+              <motion.div key={stepKey} initial={{ opacity: 0.4 }} animate={{ opacity: 1 }} transition={{ duration: 0.1 }}>
                   {rally.step === 'our_serve' && <Scale items={SERVE_SCALE} cols={3} disabled={!selected} onPick={rateServe} />}
                   {rally.step === 'opp_serve' && <Scale items={PASS_SCALE} cols={3} disabled={!selected} onPick={ratePass} />}
                   {rally.step === 'our_attack' && <Scale items={ATTACK_SCALE} cols={5} disabled={!selected} onPick={rateAttack} />}
@@ -243,8 +245,7 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
                   {rally.step !== 'opp_attack' && !selected && (
                     <p className="mt-3 text-center font-display text-xs font-semibold tracking-[0.12em] uppercase text-mute">Tap the player on the court</p>
                   )}
-                </motion.div>
-              </AnimatePresence>
+              </motion.div>
             </div>
             <div className="grid grid-cols-3 gap-2">
               <button onClick={theirFault} className="h-11 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-sm">Their fault</button>
@@ -255,16 +256,42 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
         )}
       </section>
 
-      {/* ALERTS (attack board arrives in stage 3) */}
-      <aside className="hidden lg:flex flex-col gap-3 p-5 border-l border-line">
-        <span className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">Alerts</span>
-        {trends.length === 0 && <span className="text-sm text-mute">Nothing yet.</span>}
-        {trends.slice(0, 3).map((t, i) => (
-          <div key={i} className="flex gap-2 text-sm leading-snug">
-            <span className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${t.tone === 'info' ? 'bg-good' : t.tone === 'alert' ? 'bg-bad' : 'bg-mute'}`} />
-            <span>{t.message}</span>
+      {/* ALERTS + ATTACK BOARD */}
+      <aside className="flex flex-col gap-5 p-4 lg:p-5 border-t lg:border-t-0 lg:border-l border-line lg:overflow-y-auto">
+        <div className="flex flex-col gap-2.5">
+          <div className="flex items-center justify-between">
+            <span className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">Alerts</span>
+            <InfoDot light text={`Max 3, most important first. Shown while true. No rate before ${N_MIN} actions.`} />
           </div>
-        ))}
+          {alerts.length === 0 && <span className="text-sm text-mute">Nothing right now.</span>}
+          {alerts.map(a => (
+            <div key={a.id} data-alert={a.id} className="flex gap-2 text-sm leading-snug">
+              <span className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${a.tone === 'bad' ? 'bg-bad' : 'bg-mute'}`} />
+              <span>{a.text}</span>
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between">
+            <span className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">Attack</span>
+            <InfoDot light text="Eff = (kills − errors − blocked) / attempts. Att = attempts. Now = current rotation." />
+          </div>
+          <div className="grid grid-cols-[minmax(0,1fr)_48px_32px_48px_32px] gap-x-1.5 items-baseline font-display text-[11px] font-bold tracking-[0.1em] text-mute">
+            <span />
+            <span className="col-span-2 text-center">MATCH</span>
+            <span className="col-span-2 text-center text-ink">NOW {court.rotation ? `R${court.rotation}` : ''}</span>
+            <span>PLAYER</span><span className="text-right">EFF</span><span className="text-right">ATT</span><span className="text-right">EFF</span><span className="text-right">ATT</span>
+          </div>
+          {board.map(r => (
+            <div key={r.playerId} data-board={r.name} className="grid grid-cols-[minmax(0,1fr)_48px_32px_48px_32px] gap-x-1.5 items-baseline py-1.5 border-t border-line">
+              <span className="font-display text-base font-bold uppercase truncate">{r.name} <span className="text-[11px] text-mute">{ROLE_SHORT[r.role as Player['role']]}</span></span>
+              <EffCell line={r.match} />
+              <span className="text-right font-display text-sm text-mute tabular-nums">{r.match.att}</span>
+              <EffCell line={r.now} />
+              <span className="text-right font-display text-sm text-mute tabular-nums">{r.now.att || '–'}</span>
+            </div>
+          ))}
+        </div>
       </aside>
 
       <AnimatePresence>
@@ -285,6 +312,13 @@ export function freshRally(servingTeam: TeamSide, set: number): PendingRally {
 }
 
 // ---------- Pieces ----------
+
+// Efficiency: green from 30%, red below 0. Muted until N_MIN attempts.
+function EffCell({ line }: { line: EffLine }) {
+  if (line.eff === null) return <span className="text-right font-display text-base text-mute">–</span>;
+  const tone = line.att < N_MIN ? 'text-mute' : line.eff >= 0.3 ? 'text-good' : line.eff < 0 ? 'text-bad' : 'text-ink';
+  return <span className={`text-right font-display text-base font-bold tabular-nums ${tone}`}>{line.eff < 0 ? '−' : ''}{Math.abs(Math.round(line.eff * 100))}%</span>;
+}
 
 export function InfoDot({ text, light }: { text: string; light?: boolean }) {
   const [open, setOpen] = useState(false);

@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GameState, MatchEvent, PendingRally, Player, Role, TeamSide, ROLE_LABEL, ROLE_SHORT, ROLES, SetLineup, TIMEOUTS_PER_SET } from './types';
 import {
   calculateStats, currentSetNumber, formatMatchDate, getSetLimit, isSetWon,
-  playerLabel, scoreForSet, SETS_TO_WIN, formatValue, detectTrends, rotationTable, statsByPosition,
+  playerLabel, scoreForSet, SETS_TO_WIN, formatValue, rotationTable, statsByPosition,
 } from './utils';
 import RallyView from './RallyView';
 import ReportView from './ReportView';
@@ -89,7 +89,6 @@ export default function App() {
   const score = useMemo(() => scoreForSet(gameState.events, setNum), [gameState.events, setNum]);
   const matchOver = gameState.sets.own >= SETS_TO_WIN || gameState.sets.opponent >= SETS_TO_WIN;
   const currentSetEvents = gameState.events.filter(e => e.set === setNum);
-  const trends = useMemo(() => detectTrends(gameState), [gameState]);
   const court = useMemo(() => courtState(gameState, setNum), [gameState, setNum]);
   const needsLineup = !court.hasLineup && !matchOver;
 
@@ -322,7 +321,6 @@ export default function App() {
               canUndo={currentSetEvents.length > 0 || !!(gameState.pending && gameState.pending.set === setNum)}
               court={court}
               onOpenLineup={() => setShowLineup(true)}
-              trends={trends}
             />
           </div>
         ) : (
