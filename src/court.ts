@@ -52,6 +52,7 @@ export function courtState(state: GameState, set: number, uptoExclusive?: number
   }
   let positions = [...lineup.positions];
   let liberoId = lineup.liberoId;
+  let libero2Id = lineup.libero2Id ?? null;
   let replaces = [...lineup.liberoReplaces];
   let serving: TeamSide | null = lineup.firstServe;
 
@@ -61,6 +62,7 @@ export function courtState(state: GameState, set: number, uptoExclusive?: number
     if (e.set !== set) continue;
     if (e.kind === 'sub') {
       if (e.outId === liberoId) { liberoId = e.inId; continue; }
+      if (e.outId === libero2Id) { libero2Id = e.inId; continue; }
       positions = positions.map(id => (id === e.outId ? e.inId : id));
       replaces = replaces.map(id => (id === e.outId ? e.inId : id)); // sub inherits the libero swap
       continue;
@@ -73,8 +75,10 @@ export function courtState(state: GameState, set: number, uptoExclusive?: number
     }
   }
 
-  const { display, liberoSlot } = applyLibero(positions, liberoId, replaces, serving);
-  return { hasLineup: true, positions, display, liberoId, liberoReplaces: replaces, liberoSlot, serving, rotation: rotationOf(state, positions) };
+  // Two liberos by phase: defence libero when we serve, receive libero when they serve
+  const active = serving === 'own' && libero2Id ? libero2Id : liberoId;
+  const { display, liberoSlot } = applyLibero(positions, active, replaces, serving);
+  return { hasLineup: true, positions, display, liberoId: active, liberoReplaces: replaces, liberoSlot, serving, rotation: rotationOf(state, positions) };
 }
 
 export function positionOf(court: CourtState, playerId: string): number | null {
@@ -116,5 +120,7 @@ export function pointLog(state: GameState): PointLog[] {
 export function defaultLineup(state: GameState, set: number): SetLineup {
   const prev = set > 1 ? state.lineups?.[set - 1] : undefined;
   if (prev) return { ...prev, positions: [...prev.positions], liberoReplaces: [...prev.liberoReplaces], firstServe: null };
-  return { positions: [null, null, null, null, null, null], liberoId: null, liberoReplaces: [], firstServe: null };
+  // No lineup yet: preselect the roster's liberos (two = by phase)
+  const libs = state.players.filter(p => p.role === 'libero').map(p => p.id);
+  return { positions: [null, null, null, null, null, null], liberoId: libs[0] ?? null, libero2Id: libs[1] ?? null, liberoReplaces: [], firstServe: null };
 }

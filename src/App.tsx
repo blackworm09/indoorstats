@@ -369,10 +369,7 @@ export default function App() {
             players={gameState.players}
             setNum={setNum}
             initial={gameState.lineups[setNum] ?? defaultLineup(gameState, setNum)}
-            court={court.hasLineup ? court : null}
-            setInProgress={currentSetEvents.length > 0}
             onSave={saveLineup}
-            onRotate={rotateCourt}
             onClose={court.hasLineup ? () => setShowLineup(false) : null}
           />
         )}

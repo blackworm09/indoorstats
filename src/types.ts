@@ -91,7 +91,8 @@ export type MatchEvent = StatEvent | PointEvent | SubEvent | RotateEvent | Timeo
 // Starting lineup for one set. positions[0] = P1 ... positions[5] = P6
 export interface SetLineup {
   positions: (string | null)[];
-  liberoId: string | null;
+  liberoId: string | null;        // receive libero (or the only libero)
+  libero2Id?: string | null;      // defence libero: comes in when we serve. Unset = one libero all set
   liberoReplaces: string[];
   firstServe: TeamSide | null;
 }
