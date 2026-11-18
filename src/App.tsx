@@ -10,6 +10,7 @@ import RallyView from './RallyView';
 import ReportView from './ReportView';
 import { courtState, defaultLineup } from './court';
 import { LineupSheet } from './Lineup';
+import { attackByPhase, attackByRotation, passRows, serveRows } from './analysis';
 
 const MATCH_KEY = 'indoorstats_match';
 const ROSTER_KEY = 'indoorstats_roster';
@@ -248,6 +249,15 @@ export default function App() {
     });
     const o = st.opponent;
     csv += `\nOPPONENT\nAttack points,${o.opp_attack_point}\nAces,${o.opp_ace}\nAttack mistakes,${o.opp_attack_error}\nService mistakes,${o.opp_serve_error}\nOur blocks,${o.opp_blocked}\nOur unforced errors,${o.own_error}\nOther points us,${o.other_us}\nOther points them,${o.other_them}\n`;
+    const p100 = (v: number | null) => (v === null ? '' : `${Math.round(v * 100)}%`);
+    csv += `\nPASSING (scale)\nPlayer,N,=,/,-,!,+,#,Positive %,Perfect %,Error %\n`;
+    passRows(gameState, null).forEach(r => { const c = r.counts; csv += `${r.name},${r.n},${c['=']},${c['/']},${c['-']},${c['!']},${c['+']},${c['#']},${p100((c['#'] + c['+']) / r.n)},${p100(c['#'] / r.n)},${p100(c['='] / r.n)}\n`; });
+    csv += `\nSERVING (scale)\nPlayer,N,=,-,!,+,/,#,Pressure %\n`;
+    serveRows(gameState, null).forEach(r => { const c = r.counts; csv += `${r.name},${r.n},${c['=']},${c['-']},${c['!']},${c['+']},${c['/']},${c['#']},${p100((c['#'] + c['+'] + c['/']) / r.n)}\n`; });
+    csv += `\nATTACK BY ROTATION (eff / attempts)\nPlayer,R1,R2,R3,R4,R5,R6,All\n`;
+    attackByRotation(gameState, null).rows.forEach(r => { csv += `${r.name},${r.byRot.map(l => l.att ? `${p100(l.eff)} / ${l.att}` : '').join(',')},${p100(r.all.eff)} / ${r.all.att}\n`; });
+    csv += `\nATTACK BY PASS (eff / attempts)\nPlayer,In system,Out of system,Transition\n`;
+    attackByPhase(gameState, null).forEach(r => { const f = (l: { eff: number | null; att: number }) => (l.att ? `${p100(l.eff)} / ${l.att}` : ''); csv += `${r.name},${f(r.byPhase.in)},${f(r.byPhase.out)},${f(r.byPhase.transition)}\n`; });
     const subject = encodeURIComponent(`IndoorStats Match Report - vs ${opp} - ${date}`);
     window.location.href = `mailto:?subject=${subject}&body=${encodeURIComponent(csv)}`;
   };
@@ -324,7 +334,7 @@ export default function App() {
             />
           </div>
         ) : (
-          <div className="flex-1 bg-surface overflow-y-auto">
+          <div className="flex-1 bg-background overflow-y-auto">
             <ReportView gameState={gameState} onExport={handleExport} onReset={newMatch} />
           </div>
         )}

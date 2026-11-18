@@ -1,9 +1,10 @@
-import { useState } from 'react';
-import { BarChart3, Download, RotateCcw } from 'lucide-react';
-import { GameState, Skill, REPORT_SKILLS_BY_ROLE, SKILL_LABEL, ROLE_LABEL } from './types';
-import { calculateStats, formatMatchDate, formatValue, playerLabel, scoreForSet, valueTone, SkillLine, currentSetNumber, rotationTable, statsByPosition } from './utils';
-
-const pctOf = (a: number, b: number) => (b === 0 ? '–' : `${Math.round((a / b) * 100)}%`);
+import { useMemo, useState } from 'react';
+import { Download, RotateCcw } from 'lucide-react';
+import { GameState, ROLE_SHORT, Role, ScaleCode } from './types';
+import { currentSetNumber, formatMatchDate, scoreForSet } from './utils';
+import { EffLine, N_MIN } from './alerts';
+import { attackByPhase, attackByRotation, passRows, pointSources, ScaleRow, serveRows, setterRows } from './analysis';
+import { InfoDot, PASS_SCALE, SERVE_SCALE, TONE_CLASS } from './RallyView';
 
 interface ReportViewProps {
   gameState: GameState;
@@ -11,24 +12,56 @@ interface ReportViewProps {
   onReset: () => void;
 }
 
-function SkillBlock({ skill, line }: { skill: Skill; line: SkillLine }) {
+const pct = (v: number | null) => (v === null ? '–' : `${v < 0 ? '−' : ''}${Math.abs(Math.round(v * 100))}%`);
+const share = (a: number, b: number) => (b ? a / b : null);
+
+function Card({ title, info, children, className = '' }: { title: string; info: string; children: React.ReactNode; className?: string }) {
   return (
-    <div className="bg-white/5 rounded-xl p-2.5">
-      <div className="flex justify-between items-baseline mb-1.5">
-        <span className="text-[9px] font-bold uppercase tracking-widest text-white/40">{SKILL_LABEL[skill]}</span>
-        <span className={`text-base font-black italic ${valueTone(skill, line.value)}`}>{formatValue(skill, line.value)}</span>
+    <section className={`border-t border-line pt-4 flex flex-col gap-4 min-w-0 ${className}`}>
+      <div className="flex items-center justify-between">
+        <span className="font-display text-sm font-bold tracking-[0.14em] uppercase">{title}</span>
+        <InfoDot light text={info} />
       </div>
-      <div className={`grid gap-1 text-center ${skill === 'attack' ? 'grid-cols-4' : 'grid-cols-3'}`}>
-        {(skill === 'attack'
-          ? [['−', line.minus, 'text-danger'], ['↺', line.recycle, 'text-accent'], ['0', line.zero - line.recycle, 'text-white/70'], ['#', line.plus, 'text-success']]
-          : [['−', line.minus, 'text-danger'], ['0', line.zero, 'text-white/70'], ['#', line.plus, 'text-success']] as [string, number, string][]).map(([sym, n, tone]) => (
-          <div key={sym} className="bg-black/20 rounded-md py-1">
-            <div className={`text-[10px] font-black leading-none ${tone}`}>{sym}</div>
-            <div className="text-sm font-mono font-bold leading-tight mt-0.5">{n}</div>
-          </div>
-        ))}
-      </div>
-      <div className="text-[9px] text-white/30 text-center mt-1">{line.total} {skill === 'set' ? 'attempts' : 'total'}</div>
+      {children}
+    </section>
+  );
+}
+
+const Empty = () => <span className="text-sm text-mute">No data yet.</span>;
+
+// Heatmap cell: strong green 40%+, light green 25%+, neutral 0+, red below 0. Faded until N_MIN attempts.
+function HeatCell({ line }: { line: EffLine }) {
+  if (!line.att) return <div className="h-12 rounded-md border border-dashed border-line" />;
+  const v = line.eff!;
+  const cls = v >= 0.4 ? 'bg-[rgba(16,185,129,0.85)] text-[#0B0C0E]' : v >= 0.25 ? 'bg-[rgba(16,185,129,0.35)]' : v >= 0 ? 'bg-card' : 'bg-[rgba(244,63,94,0.85)] text-[#0B0C0E]';
+  return (
+    <div className={`h-12 rounded-md flex flex-col items-center justify-center leading-none ${cls} ${line.att < N_MIN ? 'opacity-55' : ''}`}>
+      <span className="font-display text-lg font-bold tabular-nums">{pct(v)}</span>
+      <span className="font-display text-[10px] font-semibold opacity-70 mt-0.5">{line.att}</span>
+    </div>
+  );
+}
+
+function Bar({ line }: { line: EffLine }) {
+  if (!line.att) return <span className="font-display text-mute">–</span>;
+  const v = line.eff!;
+  const col = v >= 0.25 ? 'bg-good' : v < 0 ? 'bg-bad' : 'bg-mute';
+  return (
+    <div className={`flex items-center gap-2 ${line.att < N_MIN ? 'opacity-55' : ''}`}>
+      <div className={`h-2.5 rounded-sm ${col}`} style={{ width: `${Math.max(4, Math.abs(v) * 100) * 0.9}px` }} />
+      <span className="font-display text-base font-bold tabular-nums">{pct(v)}</span>
+      <span className="font-display text-[11px] text-mute">{line.att}</span>
+    </div>
+  );
+}
+
+// Stacked bar of the 6-level scale, worst → best, in the rating colours
+function ScaleBar({ row, scale }: { row: ScaleRow; scale: typeof PASS_SCALE }) {
+  return (
+    <div className="flex h-3 rounded-sm overflow-hidden bg-card">
+      {scale.map(s => row.counts[s.code] ? (
+        <div key={s.code} title={`${s.label}: ${row.counts[s.code]}`} className={TONE_CLASS[s.tone].split(' ')[0]} style={{ width: `${(row.counts[s.code] / row.n) * 100}%` }} />
+      ) : null)}
     </div>
   );
 }
@@ -36,199 +69,168 @@ function SkillBlock({ skill, line }: { skill: Skill; line: SkillLine }) {
 export default function ReportView({ gameState, onExport, onReset }: ReportViewProps) {
   const [setFilter, setSetFilter] = useState<number | null>(null);
   const setNum = currentSetNumber(gameState);
-  const liveScore = scoreForSet(gameState.events, setNum);
   const setsWithData = Array.from(new Set(gameState.events.map(e => e.set))).sort((a, b) => a - b);
-  const stats = calculateStats(gameState, setFilter);
-  const rotations = rotationTable(gameState, setFilter);
+  const setScores = [...gameState.setHistory, ...(setsWithData.includes(setNum) ? [scoreForSet(gameState.events, setNum)] : [])];
 
-  const rows = stats.players
-    .map((ps, idx) => ({ ...ps, idx: gameState.players.findIndex(p => p.id === ps.player.id) }))
-    .filter(ps => ps.serve.total + ps.attack.total + ps.pass.total + ps.set.total > 0);
-  const quiet = stats.players.filter(ps => ps.serve.total + ps.attack.total + ps.pass.total + ps.set.total === 0);
+  const heat = useMemo(() => attackByRotation(gameState, setFilter), [gameState, setFilter]);
+  const phase = useMemo(() => attackByPhase(gameState, setFilter), [gameState, setFilter]);
+  const pass = useMemo(() => passRows(gameState, setFilter), [gameState, setFilter]);
+  const serve = useMemo(() => serveRows(gameState, setFilter), [gameState, setFilter]);
+  const setters = useMemo(() => setterRows(gameState, setFilter), [gameState, setFilter]);
+  const points = useMemo(() => pointSources(gameState, setFilter), [gameState, setFilter]);
+
+  const filterBtn = (label: string, value: number | null) => (
+    <button key={label} onClick={() => setSetFilter(value)}
+      className={`h-9 px-3.5 rounded-md font-display text-sm font-bold tracking-[0.1em] uppercase ${setFilter === value ? 'border border-primary text-ink' : 'border border-line text-mute'}`}>{label}</button>
+  );
+  const th = 'font-display text-[11px] font-bold tracking-[0.12em] uppercase text-mute';
+  const name = 'font-display text-base font-bold uppercase truncate';
 
   return (
-    <div className="p-4 sm:p-8 overflow-y-auto max-w-3xl mx-auto space-y-6 pb-32">
-      <div>
-        <h2 className="text-3xl sm:text-4xl font-black italic uppercase tracking-tighter">Match Report</h2>
-        <p className="text-xs text-primary font-mono tracking-widest mt-1 uppercase">
-          {formatMatchDate(gameState.matchDate)}{gameState.opponentName ? ` · vs ${gameState.opponentName}` : ''}
-        </p>
+    <div className="p-4 lg:p-7 flex flex-col gap-7 pb-16">
+      {/* Header */}
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div className="font-display text-sm font-semibold tracking-[0.12em] uppercase text-mute">
+            {formatMatchDate(gameState.matchDate)}{gameState.opponentName ? ` · vs ${gameState.opponentName}` : ''}
+          </div>
+          <div className="flex items-baseline gap-4 mt-1">
+            <span className="font-display text-4xl font-bold tabular-nums">{gameState.sets.own}–{gameState.sets.opponent}</span>
+            <span className="font-display text-sm font-semibold tracking-[0.08em] text-mute">
+              {setScores.map((s, i) => `${s.own}–${s.opponent}`).join('  ·  ')}
+            </span>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {filterBtn('Match', null)}
+          {setsWithData.map(s => filterBtn(`Set ${s}`, s))}
+        </div>
       </div>
 
-      {/* Score */}
-      <div className="bg-surface border border-white/10 rounded-2xl p-6 text-center">
-        <div className="text-[10px] uppercase tracking-widest opacity-40 mb-2">Sets</div>
-        <div className="text-5xl font-black italic tracking-tighter text-primary">
-          {gameState.sets.own} <span className="text-white/20">-</span> {gameState.sets.opponent}
-        </div>
-        {gameState.setHistory.length > 0 && (
-          <div className="flex justify-center flex-wrap gap-2 mt-3">
-            {gameState.setHistory.map((s, i) => (
-              <span key={i} className="text-xs font-mono bg-white/5 px-3 py-1 rounded-lg">{s.own}:{s.opponent}</span>
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] gap-x-9 gap-y-7">
+        {/* Attack × rotation */}
+        <Card title="Attack · Rotation" info="Attack efficiency per attacker and rotation: (kills − errors − blocked) / attempts. Small number = attempts. Faded = under 5. Side-out = rallies won when they serve. Break = rallies won when we serve.">
+          {heat.rows.length === 0 ? <Empty /> : (
+            <div className="overflow-x-auto">
+              <div className="grid grid-cols-[110px_repeat(6,minmax(48px,1fr))_68px] gap-1.5 items-center min-w-[520px]">
+                <span />
+                {[1, 2, 3, 4, 5, 6].map(r => <span key={r} className={`${th} text-center`}>R{r}</span>)}
+                <span className={`${th} text-center`}>All</span>
+                {heat.rows.map(r => (
+                  <div key={r.id} className="contents" data-heat={r.name}>
+                    <span className={name}>{r.name} <span className="text-[11px] text-mute">{ROLE_SHORT[r.role as Role]}</span></span>
+                    {r.byRot.map((l, k) => <HeatCell key={k} line={l} />)}
+                    <span className="text-center font-display text-lg font-bold tabular-nums">{pct(r.all.eff)}</span>
+                  </div>
+                ))}
+                {([['Side-out', heat.sideOut, heat.so], ['Break', heat.breakPt, heat.bp]] as const).map(([label, vals, raw]) => (
+                  <div key={label} className="contents">
+                    <span className={th}>{label}</span>
+                    {vals.map((v, k) => (
+                      <span key={k} className={`text-center font-display text-base font-bold tabular-nums ${v === null ? 'text-mute' : v < 0.45 ? 'text-bad' : ''}`} title={`${raw[k][0]} of ${raw[k][1]}`}>
+                        {pct(v)}<span className="block text-[10px] font-semibold text-mute">{raw[k][1] ? `${raw[k][0]}/${raw[k][1]}` : ''}</span>
+                      </span>
+                    ))}
+                    <span />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </Card>
+
+        {/* Attack × pass */}
+        <Card title="Attack · Pass" info="In system = first attack after a # or + pass. Out of system = after ! or −. Transition = every other attack (after our serve, a dig or a recycle). Small number = attempts.">
+          {phase.length === 0 ? <Empty /> : (
+            <div className="grid grid-cols-[90px_repeat(3,minmax(0,1fr))] gap-x-2 gap-y-3 items-center">
+              <span />
+              {['In system', 'Out of system', 'Transition'].map(h => <span key={h} className={th}>{h}</span>)}
+              {phase.map(r => (
+                <div key={r.id} className="contents" data-phase={r.name}>
+                  <span className={`${name} ${r.id === 'team' ? 'text-primary' : ''}`}>{r.name}</span>
+                  <Bar line={r.byPhase.in} /><Bar line={r.byPhase.out} /><Bar line={r.byPhase.transition} />
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        {/* Passing */}
+        <Card title="Passing" info="Positive % = # and +. Perfect % = #. Error % = = (aced). Bar = all passes on the scale, worst to best.">
+          {pass.length === 0 ? <Empty /> : (
+            <div className="grid grid-cols-[90px_36px_repeat(3,56px)_minmax(80px,1fr)] gap-x-2 gap-y-2.5 items-center">
+              <span /><span className={`${th} text-right`}>N</span>
+              <span className={`${th} text-right`}>Pos</span><span className={`${th} text-right`}>Perf</span><span className={`${th} text-right`}>Err</span><span />
+              {pass.map(r => (
+                <div key={r.id} className="contents" data-pass={r.name}>
+                  <span className={`${name} ${r.id === 'team' ? 'text-primary' : ''}`}>{r.name}</span>
+                  <span className="text-right font-display text-sm text-mute tabular-nums">{r.n}</span>
+                  <span className="text-right font-display text-base font-bold tabular-nums">{pct(share(r.counts['#'] + r.counts['+'], r.n))}</span>
+                  <span className="text-right font-display text-base tabular-nums">{pct(share(r.counts['#'], r.n))}</span>
+                  <span className={`text-right font-display text-base tabular-nums ${r.counts['='] ? 'text-bad' : ''}`}>{pct(share(r.counts['='], r.n))}</span>
+                  <ScaleBar row={r} scale={PASS_SCALE} />
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        {/* Serving */}
+        <Card title="Serving" info="Rated by how they passed it. Pressure % = serves that put them out of system or worse for them (+, / and aces). Bar = all serves, worst to best.">
+          {serve.length === 0 ? <Empty /> : (
+            <div className="grid grid-cols-[90px_36px_repeat(3,56px)_minmax(80px,1fr)] gap-x-2 gap-y-2.5 items-center">
+              <span /><span className={`${th} text-right`}>N</span>
+              <span className={`${th} text-right`}>Ace</span><span className={`${th} text-right`}>Err</span><span className={`${th} text-right`}>Press</span><span />
+              {serve.map(r => (
+                <div key={r.id} className="contents" data-serve={r.name}>
+                  <span className={`${name} ${r.id === 'team' ? 'text-primary' : ''}`}>{r.name}</span>
+                  <span className="text-right font-display text-sm text-mute tabular-nums">{r.n}</span>
+                  <span className="text-right font-display text-base font-bold tabular-nums">{r.counts['#']}</span>
+                  <span className={`text-right font-display text-base tabular-nums ${r.counts['='] ? 'text-bad' : ''}`}>{r.counts['=']}</span>
+                  <span className="text-right font-display text-base tabular-nums">{pct(share(r.counts['#'] + r.counts['+'] + r.counts['/'], r.n))}</span>
+                  <ScaleBar row={r} scale={SERVE_SCALE} />
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        {/* Points */}
+        <Card title="Points" info="Where our points came from, and how we gave points away.">
+          <div className="grid grid-cols-2 gap-6">
+            {([['Won', points.won, 'text-good'], ['Lost', points.lost, 'text-bad']] as const).map(([label, list, tone]) => (
+              <div key={label} className="flex flex-col gap-1.5">
+                <span className={`${th} ${tone}`}>{label} · {list.reduce((a, [, n]) => a + n, 0)}</span>
+                {list.filter(([, n]) => n > 0).map(([l, n]) => (
+                  <div key={l} className="flex justify-between text-sm border-t border-line pt-1.5"><span>{l}</span><span className="font-display font-bold tabular-nums">{n}</span></div>
+                ))}
+              </div>
             ))}
           </div>
-        )}
-        {(liveScore.own > 0 || liveScore.opponent > 0) && (
-          <div className="text-xs font-mono opacity-40 mt-2">Current set: {liveScore.own}-{liveScore.opponent}</div>
-        )}
-      </div>
+        </Card>
 
-      {/* Set filter */}
-      {setsWithData.length > 0 && (
-        <div className="flex gap-1.5 p-1 bg-white/5 rounded-xl border border-white/10 overflow-x-auto">
-          {[null, ...setsWithData].map(s => (
-            <button key={s ?? 'all'} onClick={() => setSetFilter(s)}
-              className={`flex-1 min-w-14 py-2 rounded-lg font-bold uppercase text-[11px] tracking-wider transition-all ${setFilter === s ? 'bg-primary text-black' : 'text-white/40'}`}>
-              {s === null ? 'Match' : `Set ${s}`}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Team */}
-      <div className="bg-surface border border-white/10 rounded-2xl p-4 space-y-3">
-        <span className="text-[10px] uppercase font-bold tracking-widest text-primary">Team</span>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {(['serve', 'attack', 'pass', 'set'] as Skill[]).map(s => <SkillBlock key={s} skill={s} line={stats.team[s]} />)}
-        </div>
-        <p className="text-[10px] text-white/30">Serve, attack, pass: efficiency (# − −) / total. Recycles (↺) count as attack attempts. Assist: kills set / attack attempts set (− 0 # = how those attacks ended).</p>
-      </div>
-
-      {/* Rotations */}
-      <div className="bg-surface border border-white/10 rounded-2xl p-4 space-y-3">
-        <span className="text-[10px] uppercase font-bold tracking-widest text-primary">By rotation</span>
-        <table className="w-full text-center text-xs">
-          <thead>
-            <tr className="text-[9px] uppercase tracking-wider text-white/40">
-              <th className="text-left font-bold py-1">Rot</th>
-              <th className="font-bold">Won</th>
-              <th className="font-bold">Lost</th>
-              <th className="font-bold">+/−</th>
-              <th className="font-bold">Side-out</th>
-              <th className="font-bold">Break</th>
-            </tr>
-          </thead>
-          <tbody className="font-mono">
-            {rotations.map(r => {
-              const diff = r.won - r.lost;
-              const played = r.won + r.lost > 0;
-              return (
-                <tr key={r.rotation} className={`border-t border-white/5 ${played ? '' : 'opacity-30'}`}>
-                  <td className="text-left font-black py-1.5 font-sans">R{r.rotation}</td>
-                  <td className="text-success">{r.won}</td>
-                  <td className="text-danger">{r.lost}</td>
-                  <td className={diff > 0 ? 'text-success' : diff < 0 ? 'text-danger' : ''}>{diff > 0 ? `+${diff}` : diff}</td>
-                  <td>{pctOf(r.soWon, r.soTotal)} <span className="text-white/30 text-[9px]">{r.soWon}/{r.soTotal}</span></td>
-                  <td>{pctOf(r.bpWon, r.bpTotal)} <span className="text-white/30 text-[9px]">{r.bpWon}/{r.bpTotal}</span></td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <p className="text-[10px] text-white/30">Rotation = setter's position (R1 = setter in P1). Side-out: points won when they serve. Break: points won when we serve.</p>
-      </div>
-
-      {/* Opponent */}
-      <div className="bg-surface border border-white/10 rounded-2xl p-4 space-y-3">
-        <span className="text-[10px] uppercase font-bold tracking-widest text-secondary">Opponent</span>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
-          {[
-            ['Attack points', stats.opponent.opp_attack_point, 'text-secondary'],
-            ['Aces', stats.opponent.opp_ace, 'text-secondary'],
-            ['Attack mistakes', stats.opponent.opp_attack_error, 'text-primary'],
-            ['Service mistakes', stats.opponent.opp_serve_error, 'text-primary'],
-            ['Our blocks', stats.opponent.opp_blocked, 'text-primary'],
-            ['Our unforced errors', stats.opponent.own_error, 'text-secondary'],
-          ].map(([label, n, tone]) => (
-            <div key={label as string} className="bg-white/5 rounded-xl p-2.5">
-              <div className={`text-xl font-black italic ${tone}`}>{n as number}</div>
-              <div className="text-[9px] uppercase tracking-wider text-white/40">{label as string}</div>
-            </div>
-          ))}
-        </div>
-        {(stats.opponent.other_us + stats.opponent.other_them) > 0 && (
-          <p className="text-[10px] text-white/30">Other points: {stats.opponent.other_us} us, {stats.opponent.other_them} them.</p>
-        )}
-      </div>
-
-      {/* Players */}
-      <div className="bg-surface border border-white/10 rounded-2xl overflow-hidden">
-        <div className="p-4 border-b border-white/5 flex justify-between items-center">
-          <h3 className="font-black italic uppercase tracking-tight text-lg">Player Stats</h3>
-          <BarChart3 className="text-primary w-5 h-5" />
-        </div>
-        {rows.length === 0 ? (
-          <div className="p-8 text-center text-xs text-white/30">No stats tracked{setFilter ? ` in set ${setFilter}` : ''} yet.</div>
-        ) : (
-          <div className="divide-y divide-white/5">
-            {rows.map(ps => {
-              const skills = REPORT_SKILLS_BY_ROLE[ps.player.role];
-              return (
-                <div key={ps.player.id} className="p-4 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-black italic uppercase text-base">{playerLabel(ps.player, ps.idx)}</span>
-                    <span className="text-[9px] font-bold uppercase px-2 py-0.5 rounded bg-white/10 text-white/60">{ROLE_LABEL[ps.player.role]}</span>
-                  </div>
-                  <div className={`grid gap-2 ${skills.length === 3 ? 'grid-cols-3' : 'grid-cols-1 max-w-[12rem]'}`}>
-                    {skills.map(s => <SkillBlock key={s} skill={s} line={ps[s]} />)}
-                  </div>
-                  <ByPosition gameState={gameState} playerId={ps.player.id} skills={skills.filter(s => s !== 'set')} setFilter={setFilter} />
+        {/* Setter */}
+        <Card title="Setter" info="Every teammate attack counts as a set. Assist = the attack was a kill. Eff = attack efficiency of the hitters she set.">
+          {setters.length === 0 ? <Empty /> : (
+            <div className="grid grid-cols-[90px_repeat(3,64px)] gap-x-2 gap-y-2 items-center">
+              <span /><span className={`${th} text-right`}>Sets</span><span className={`${th} text-right`}>Assists</span><span className={`${th} text-right`}>Eff</span>
+              {setters.map(r => (
+                <div key={r.id} className="contents">
+                  <span className={name}>{r.name}</span>
+                  <span className="text-right font-display text-sm text-mute tabular-nums">{r.att}</span>
+                  <span className="text-right font-display text-base font-bold tabular-nums">{r.assists}</span>
+                  <span className="text-right font-display text-base tabular-nums">{pct(r.eff)}</span>
                 </div>
-              );
-            })}
-          </div>
-        )}
-        {quiet.length > 0 && rows.length > 0 && (
-          <div className="px-4 py-3 border-t border-white/5 text-[10px] text-white/30 uppercase tracking-wider">
-            No stats: {quiet.map(ps => playerLabel(ps.player, gameState.players.findIndex(p => p.id === ps.player.id))).join(', ')}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </Card>
       </div>
 
-      <div className="flex gap-3">
-        <button onClick={onExport}
-          className="flex-1 py-4 bg-primary text-black font-black uppercase text-xs tracking-widest rounded-2xl flex items-center justify-center gap-2 active:scale-95 transition-all">
-          <Download className="w-4 h-4" /> Email Stats
-        </button>
-        <button onClick={onReset}
-          className="py-4 px-6 bg-danger/20 text-danger border border-danger/30 font-bold uppercase text-xs tracking-widest rounded-2xl flex items-center justify-center gap-2 active:scale-95 transition-all">
-          <RotateCcw className="w-4 h-4" /> New Match
-        </button>
+      <div className="flex flex-wrap gap-2 border-t border-line pt-5">
+        <button onClick={onExport} className="h-11 px-4 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center gap-2"><Download className="w-4 h-4" /> Export (email)</button>
+        <button onClick={onReset} className="h-11 px-4 rounded-lg border border-bad/40 text-bad font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center gap-2"><RotateCcw className="w-4 h-4" /> New match</button>
       </div>
     </div>
-  );
-}
-
-function ByPosition({ gameState, playerId, skills, setFilter }: { gameState: GameState; playerId: string; skills: Skill[]; setFilter: number | null }) {
-  const byPos = statsByPosition(gameState, playerId, setFilter);
-  const positions = [1, 2, 3, 4, 5, 6].filter(p => byPos[p] && skills.some(s => byPos[p][s].total > 0));
-  if (positions.length === 0) return null;
-  return (
-    <details className="group">
-      <summary className="text-[10px] font-bold uppercase tracking-widest text-white/40 cursor-pointer select-none py-1">By position ▾</summary>
-      <table className="w-full text-center text-xs mt-1">
-        <thead>
-          <tr className="text-[9px] uppercase tracking-wider text-white/40">
-            <th className="text-left font-bold py-1">Pos</th>
-            {skills.map(s => <th key={s} className="font-bold">{SKILL_LABEL[s]}</th>)}
-          </tr>
-        </thead>
-        <tbody className="font-mono">
-          {positions.map(p => (
-            <tr key={p} className="border-t border-white/5">
-              <td className="text-left font-black py-1 font-sans">P{p}</td>
-              {skills.map(s => {
-                const line = byPos[p][s];
-                return (
-                  <td key={s} className={valueTone(s, line.value)}>
-                    {line.total ? <>{formatValue(s, line.value)} <span className="text-white/30 text-[9px]">({line.total})</span></> : <span className="text-white/20">–</span>}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </details>
   );
 }
