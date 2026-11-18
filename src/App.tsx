@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { XCircle, Trophy, Plus, Trash2, Minus, Maximize } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GameState, MatchEvent, PendingRally, Player, Role, TeamSide, ROLE_LABEL, ROLE_SHORT, ROLES, SetLineup } from './types';
@@ -75,9 +75,7 @@ export default function App() {
   const [showConfig, setShowConfig] = useState(() => gameState.events.length === 0);
   const [setEndWinner, setSetEndWinner] = useState<TeamSide | null>(null);
   const [confirmState, setConfirmState] = useState<ConfirmState>(null);
-  const [feedback, setFeedback] = useState<string | null>(null);
   const [showLineup, setShowLineup] = useState(false);
-  const feedbackTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     try {
@@ -120,11 +118,8 @@ export default function App() {
     }
   }, [score, setNum, matchOver]);
 
-  const flash = (msg: string) => {
-    setFeedback(msg);
-    window.clearTimeout(feedbackTimer.current);
-    feedbackTimer.current = window.setTimeout(() => setFeedback(null), 1200);
-  };
+  // No pop-up notifications during play (kept as a hook in case a quiet status line comes back)
+  const flash = (_msg: string) => {};
 
   const pushEvent = (e: MatchEvent) => setGameState(prev => ({ ...prev, events: [...prev.events, e] }));
 
@@ -318,16 +313,6 @@ export default function App() {
           </div>
         )}
       </main>
-
-      {/* Tap feedback (rally mode; quick mode shows its own) */}
-      <AnimatePresence>
-        {feedback && view === 'track' && (
-          <motion.div key={feedback} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, transition: { duration: 0 } }}
-            className="fixed top-[72px] left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-ink text-[#0B0C0E] font-display text-sm font-bold uppercase tracking-[0.1em] shadow-2xl whitespace-nowrap">
-            {feedback}
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* SET END MODAL */}
       <AnimatePresence>

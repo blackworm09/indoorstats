@@ -327,13 +327,25 @@ function CourtSlot({ pos, player, label, selected, dimmed, onTap, onLong }: {
 }) {
   const timer = useRef<number | undefined>(undefined);
   const longFired = useRef(false);
-  const start = () => { longFired.current = false; timer.current = window.setTimeout(() => { longFired.current = true; onLong(); }, 450); };
-  const cancel = () => window.clearTimeout(timer.current);
+  const origin = useRef<{ x: number; y: number } | null>(null);
+  const fireLong = () => { if (longFired.current) return; longFired.current = true; window.clearTimeout(timer.current); onLong(); };
+  // Touch browsers cancel the pointer during a hold (pointercancel/pointerleave), so only movement or lifting the finger stops it
+  const start = (e: React.PointerEvent) => {
+    longFired.current = false; origin.current = { x: e.clientX, y: e.clientY };
+    window.clearTimeout(timer.current); timer.current = window.setTimeout(fireLong, 450);
+  };
+  const move = (e: React.PointerEvent) => {
+    const o = origin.current;
+    if (o && Math.hypot(e.clientX - o.x, e.clientY - o.y) > 12) { window.clearTimeout(timer.current); origin.current = null; }
+  };
+  const end = () => { window.clearTimeout(timer.current); origin.current = null; };
   const libero = player?.role === 'libero';
   return (
     <button
-      onPointerDown={start} onPointerUp={cancel} onPointerLeave={cancel} onContextMenu={e => e.preventDefault()}
-      onClick={() => { if (!longFired.current) onTap(); }}
+      onPointerDown={start} onPointerMove={move} onPointerUp={end}
+      onContextMenu={e => { e.preventDefault(); if (origin.current || timer.current) fireLong(); }}
+      onClick={() => { if (!longFired.current) onTap(); longFired.current = false; }}
+      style={{ WebkitTouchCallout: 'none', touchAction: 'manipulation' }}
       className={`h-20 lg:h-24 rounded-lg flex flex-col items-center justify-center gap-0.5 px-1 transition-all select-none ${
         selected ? 'border-[1.5px] border-primary bg-primary/10' : libero ? 'border border-dashed border-mute' : 'border border-line'
       } ${dimmed ? 'opacity-35' : ''}`}>
@@ -345,8 +357,11 @@ function CourtSlot({ pos, player, label, selected, dimmed, onTap, onLong }: {
 }
 
 function Sheet({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  // Lifting the finger after a long press sends a tap that would land on the backdrop: ignore taps right after opening
+  const openedAt = useRef(Date.now());
   return (
-    <div className="fixed inset-0 z-[150] flex items-end sm:items-center justify-center bg-black/70" onClick={onClose}>
+    <div className="fixed inset-0 z-[150] flex items-end sm:items-center justify-center bg-black/70"
+      onClick={() => { if (Date.now() - openedAt.current > 500) onClose(); }}>
       <motion.div initial={{ y: 40, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 40, opacity: 0 }} transition={{ duration: 0.15 }}
         onClick={e => e.stopPropagation()}
         className="bg-surface border border-line p-5 rounded-t-2xl sm:rounded-2xl w-full max-w-md shadow-2xl max-h-[85dvh] overflow-y-auto space-y-4">
