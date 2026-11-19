@@ -10,7 +10,10 @@ import RallyView from './RallyView';
 import ReportView from './ReportView';
 import { courtState, defaultLineup } from './court';
 import { LineupSheet } from './Lineup';
+import { InfoDot } from './RallyView';
 import { attackByPhase, attackByRotation, historyLog, passRows, serveRows } from './analysis';
+import { hasData, loadCurrentTeamId, loadMatches, loadTeams, newId, SavedMatch, saveCurrentTeamId, saveMatches, saveTeams, Team } from './storage';
+import { getLang, Lang, setLang, t } from './i18n';
 
 const MATCH_KEY = 'indoorstats_match';
 const ROSTER_KEY = 'indoorstats_roster';
@@ -77,6 +80,60 @@ export default function App() {
   const [setEndWinner, setSetEndWinner] = useState<TeamSide | null>(null);
   const [confirmState, setConfirmState] = useState<ConfirmState>(null);
   const [showLineup, setShowLineup] = useState(false);
+  const [lang, setLangState] = useState<Lang>(getLang);
+  const changeLang = (l: Lang) => { setLang(l); setLangState(l); };
+
+  // Teams: the current roster is the first team on a fresh install
+  const [teams, setTeams] = useState<Team[]>(() => {
+    const saved = loadTeams();
+    return saved.length ? saved : [{ id: newId('t'), name: 'My team', players: gameState.players, subLimit: gameState.subLimit }];
+  });
+  const [teamId, setTeamId] = useState<string>(() => {
+    const want = gameState.teamId ?? loadCurrentTeamId();
+    return teams.some(x => x.id === want) ? want! : teams[0].id;
+  });
+  const team = teams.find(x => x.id === teamId) ?? teams[0];
+  const [matches, setMatches] = useState<SavedMatch[]>(loadMatches);
+  const [reportMatchId, setReportMatchId] = useState<string | null>(null); // null = this match
+
+  // Roster edits are saved to the current team
+  useEffect(() => {
+    setTeams(prev => {
+      const next = prev.map(x => (x.id === teamId ? { ...x, players: gameState.players, subLimit: gameState.subLimit } : x));
+      saveTeams(next);
+      return next;
+    });
+    saveCurrentTeamId(teamId);
+  }, [gameState.players, gameState.subLimit, teamId]);
+
+  const matchStarted = hasData(gameState);
+  const viewedState = (reportMatchId && matches.find(m => m.id === reportMatchId)?.state) || gameState;
+  const switchTeam = (id: string) => {
+    const tm = teams.find(x => x.id === id);
+    if (!tm || matchStarted) return; // switching team mid-match is not allowed: start a new match first
+    setTeamId(id);
+    setGameState(prev => ({ ...freshState(padRoster(tm.players)), subLimit: tm.subLimit, opponentName: prev.opponentName, teamId: id }));
+  };
+  const addTeam = () => {
+    const tm: Team = { id: newId('t'), name: t('Team {n}', { n: teams.length + 1 }), players: defaultRoster(), subLimit: 8 };
+    setTeams(prev => { const next = [...prev, tm]; saveTeams(next); return next; });
+    if (!matchStarted) { setTeamId(tm.id); setGameState(prev => ({ ...freshState(tm.players), opponentName: prev.opponentName, teamId: tm.id })); }
+  };
+  const renameTeam = (name: string) => setTeams(prev => { const next = prev.map(x => (x.id === teamId ? { ...x, name } : x)); saveTeams(next); return next; });
+  const deleteTeam = (id: string) => {
+    const tm = teams.find(x => x.id === id);
+    if (!tm || id === teamId) return;
+    setConfirmState({
+      message: t('Delete team {name}? Saved matches stay.', { name: tm.name }),
+      confirmLabel: t('Delete'),
+      onConfirm: () => setTeams(prev => { const next = prev.filter(x => x.id !== id); saveTeams(next); return next; }),
+    });
+  };
+  const deleteMatch = (id: string) => setConfirmState({
+    message: t('Delete this saved match? This cannot be undone.'),
+    confirmLabel: t('Delete'),
+    onConfirm: () => { setMatches(prev => { const next = prev.filter(m => m.id !== id); saveMatches(next); return next; }); setReportMatchId(null); },
+  });
 
   useEffect(() => {
     try {
@@ -195,35 +252,47 @@ export default function App() {
 
   const manualEndSet = () => {
     if (score.own === score.opponent) {
-      setConfirmState({ message: `Score is tied ${score.own}:${score.opponent}. Add the last point first.`, confirmLabel: 'OK', onConfirm: () => {} });
+      setConfirmState({ message: t('Score is tied {a}:{b}. Add the last point first.', { a: score.own, b: score.opponent }), confirmLabel: 'OK', onConfirm: () => {} });
       return;
     }
     const winner: TeamSide = score.own > score.opponent ? 'own' : 'opponent';
     setConfirmState({
-      message: `End set ${setNum} at ${score.own}:${score.opponent}? Indoor sets go to ${setLimit}, win by 2.`,
-      confirmLabel: 'End Set',
+      message: t('End set {n} at {a}:{b}? Sets go to {l}, win by 2.', { n: setNum, a: score.own, b: score.opponent, l: setLimit }),
+      confirmLabel: t('End set'),
       onConfirm: () => closeSet(winner),
     });
   };
 
   const newMatch = () => {
     setConfirmState({
-      message: 'Start a new match? All stats from this match will be cleared. Your roster stays.',
-      confirmLabel: 'New Match',
+      message: matchStarted ? t('Start a new match? This match is saved on this device and stays in Analysis.') : t('Start a new match?'),
+      confirmLabel: t('New match'),
       onConfirm: () => {
+        if (matchStarted) {
+          const saved: SavedMatch = { id: newId('m'), teamId, teamName: team.name, savedAt: Date.now(), state: { ...gameState, pending: null, teamId } };
+          const next = [saved, ...matches];
+          // Browser storage is full: keep the match in the app, warn, and don't clear it
+          if (!saveMatches(next)) {
+            setConfirmState({ message: t('Storage on this device is full. Delete old matches in Analysis, then try again.'), confirmLabel: t('OK'), onConfirm: () => {} });
+            return;
+          }
+          setMatches(next);
+        }
         setGameState(prev => ({
           ...freshState(prev.players),
           autoScore: prev.autoScore,
           subLimit: prev.subLimit,
+          teamId,
           templateLineup: prev.lineups[1] ?? prev.templateLineup ?? null,
         }));
+        setReportMatchId(null);
         setView('track');
         setShowConfig(true);
       },
     });
   };
 
-  const handleExport = () => {
+  const handleExport = (gameState: GameState) => {
     const st = calculateStats(gameState, null);
     const date = formatMatchDate(gameState.matchDate);
     const opp = gameState.opponentName || 'Opponent';
@@ -278,7 +347,7 @@ export default function App() {
     const hasStats = gameState.events.some(e => (e.kind === 'stat' && e.playerId === id) || (e.kind === 'sub' && (e.inId === id || e.outId === id)));
     const doRemove = () => setGameState(prev => ({ ...prev, players: prev.players.filter(p => p.id !== id) }));
     if (hasStats) {
-      setConfirmState({ message: 'This player has stats in the current match. Remove anyway? Their stats will drop out of the report.', confirmLabel: 'Remove', onConfirm: doRemove });
+      setConfirmState({ message: t('This player has stats in the current match. Remove anyway? Their stats will drop out of the report.'), confirmLabel: t('Remove'), onConfirm: doRemove });
     } else doRemove();
   };
 
@@ -287,21 +356,21 @@ export default function App() {
     <div className="h-[100dvh] flex flex-col font-sans bg-background text-ink selection:bg-primary selection:text-black">
       {/* HEADER */}
       <header className="flex items-center gap-3 sm:gap-6 px-4 sm:px-6 h-14 sm:h-16 border-b border-line bg-surface sticky top-0 z-50">
-        <span className="font-display font-bold tracking-[0.16em] text-sm sm:text-base hidden sm:inline">INDOORSTATS</span>
+        <span className="font-display font-bold tracking-[0.16em] text-sm sm:text-base hidden sm:inline">{t("INDOORSTATS")}</span>
         <nav className="flex gap-4 h-full">
           {([['track', 'Live'], ['report', 'Analysis']] as const).map(([v, label]) => (
             <button key={v} onClick={() => setView(v)}
-              className={`h-full font-display font-bold tracking-[0.12em] uppercase text-xs sm:text-sm border-b-2 ${view === v ? 'border-primary text-ink' : 'border-transparent text-mute'}`}>{label}</button>
+              className={`h-full font-display font-bold tracking-[0.12em] uppercase text-xs sm:text-sm border-b-2 ${view === v ? 'border-primary text-ink' : 'border-transparent text-mute'}`}>{t(label)}</button>
           ))}
-          <button onClick={() => setShowConfig(true)} className="h-full font-display font-bold tracking-[0.12em] uppercase text-xs sm:text-sm border-b-2 border-transparent text-mute">Team</button>
+          <button onClick={() => setShowConfig(true)} className="h-full font-display font-bold tracking-[0.12em] uppercase text-xs sm:text-sm border-b-2 border-transparent text-mute">{t("Team")}</button>
         </nav>
         <div className="flex-1 flex items-center justify-center gap-2 sm:gap-3">
-          <span className="font-display text-[11px] font-bold tracking-[0.14em] text-primary hidden sm:inline">US</span>
+          <span className="font-display text-[11px] font-bold tracking-[0.14em] text-primary hidden sm:inline">{t("US")}</span>
           <span className="font-display text-3xl sm:text-4xl font-bold tabular-nums leading-none">{score.own}</span>
           <span className="font-display text-2xl text-mute leading-none">:</span>
           <span className="font-display text-3xl sm:text-4xl font-bold tabular-nums leading-none">{score.opponent}</span>
-          <span className="font-display text-[11px] font-bold tracking-[0.14em] text-secondary hidden sm:inline">THEM</span>
-          <span className="font-display text-[11px] font-semibold tracking-[0.12em] text-mute ml-2 hidden md:inline">SET {matchOver ? '–' : setNum} · {gameState.sets.own}–{gameState.sets.opponent} · TO {setLimit}</span>
+          <span className="font-display text-[11px] font-bold tracking-[0.14em] text-secondary hidden sm:inline">{t("THEM")}</span>
+          <span className="font-display text-[11px] font-semibold tracking-[0.12em] text-mute ml-2 hidden md:inline">{t('SET')} {matchOver ? '–' : setNum} · {gameState.sets.own}–{gameState.sets.opponent} · {t('TO {n}', { n: setLimit })}</span>
         </div>
         {(['own', 'opponent'] as TeamSide[]).map(team => {
           const n = timeoutsUsed(team);
@@ -309,23 +378,23 @@ export default function App() {
             <button key={team} onClick={() => callTimeout(team)} disabled={matchOver || n >= TIMEOUTS_PER_SET}
               aria-label={team === 'own' ? 'Our timeout' : 'Their timeout'}
               className={`h-9 px-2.5 rounded-md border font-display font-bold tracking-[0.1em] uppercase text-xs whitespace-nowrap disabled:opacity-35 ${team === 'own' ? 'border-primary/50 text-primary' : 'border-secondary/50 text-secondary'}`}>
-              TO {n}/{TIMEOUTS_PER_SET}
+              {t('TO')} {n}/{TIMEOUTS_PER_SET}
             </button>
           );
         })}
         <button onClick={manualEndSet} disabled={matchOver}
-          className="h-9 px-3 rounded-md border border-line font-display font-bold tracking-[0.1em] uppercase text-xs whitespace-nowrap disabled:opacity-30">End set</button>
+          className="h-9 px-3 rounded-md border border-line font-display font-bold tracking-[0.1em] uppercase text-xs whitespace-nowrap disabled:opacity-30">{t("End set")}</button>
         <button onClick={() => { try { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); } catch { /* not supported */ } }}
           aria-label="Fullscreen" className="h-9 w-9 rounded-md border border-line hidden sm:flex items-center justify-center text-mute"><Maximize className="w-4 h-4" /></button>
       </header>
 
       {/* MAIN */}
-      <main className="flex-1 flex flex-col overflow-y-auto lg:overflow-hidden min-h-0">
+      <main key={lang} className="flex-1 flex flex-col overflow-y-auto lg:overflow-hidden min-h-0">
         {view === 'track' ? (
           <div className="flex-1 flex flex-col bg-background min-h-0 w-full">
             {matchOver && (
               <div className="mx-4 mt-4 p-3 rounded-lg border border-primary/40 text-primary font-display font-bold tracking-[0.1em] uppercase text-sm text-center">
-                Match over · {gameState.sets.own}–{gameState.sets.opponent}. Check Analysis or start a new match.
+                {t('Match over · {a}–{b}. Check Analysis or start a new match.', { a: gameState.sets.own, b: gameState.sets.opponent })}
               </div>
             )}
             <RallyView
@@ -343,7 +412,23 @@ export default function App() {
           </div>
         ) : (
           <div className="flex-1 bg-background overflow-y-auto">
-            <ReportView gameState={gameState} onExport={handleExport} onReset={newMatch} />
+            <ReportView
+              gameState={viewedState}
+              onExport={() => handleExport(viewedState)}
+              onReset={reportMatchId ? () => deleteMatch(reportMatchId) : newMatch}
+              past={!!reportMatchId}
+              selector={matches.length > 0 ? (
+                <select value={reportMatchId ?? ''} onChange={e => setReportMatchId(e.target.value || null)} aria-label={t('Match')}
+                  className="h-10 max-w-full bg-card border border-line rounded-lg px-3 font-display font-bold uppercase tracking-[0.06em] text-sm outline-none focus:border-primary">
+                  <option value="">{t('This match')} · {gameState.sets.own}–{gameState.sets.opponent}</option>
+                  {matches.map(m => (
+                    <option key={m.id} value={m.id}>
+                      {formatMatchDate(m.state.matchDate)} · {m.teamName}{m.state.opponentName ? ` vs ${m.state.opponentName}` : ''} · {m.state.sets.own}–{m.state.sets.opponent}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+            />
           </div>
         )}
       </main>
@@ -351,26 +436,23 @@ export default function App() {
       {/* SET END MODAL */}
       <AnimatePresence>
         {setEndWinner && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-black/80 backdrop-blur-xl">
-            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-surface border border-white/10 p-8 rounded-3xl w-full max-w-sm text-center space-y-6">
-              <Trophy className="w-12 h-12 text-primary mx-auto" />
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-black/80">
+            <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-surface border border-line p-7 rounded-2xl w-full max-w-sm text-center space-y-5">
+              <Trophy className={`w-10 h-10 mx-auto ${setEndWinner === 'own' ? 'text-primary' : 'text-secondary'}`} />
               <div>
-                <h3 className="text-2xl font-black italic uppercase tracking-tight">Set {setNum} Over!</h3>
-                <p className="text-sm text-white/50 mt-1">{score.own} - {score.opponent}</p>
-                <p className={`text-lg font-black italic uppercase mt-2 ${setEndWinner === 'own' ? 'text-primary' : 'text-secondary'}`}>
-                  {setEndWinner === 'own' ? 'My Team' : (gameState.opponentName || 'Opponent')} wins the set!
+                <h3 className="font-display text-3xl font-bold uppercase tracking-[0.04em]">{t('Set {n}', { n: setNum })} · {score.own}:{score.opponent}</h3>
+                <p className={`font-display text-lg font-bold uppercase tracking-[0.08em] mt-1 ${setEndWinner === 'own' ? 'text-primary' : 'text-secondary'}`}>
+                  {setEndWinner === 'own' ? t('We win the set') : t('{name} wins the set', { name: gameState.opponentName || t('Opponent') })}
                 </p>
               </div>
               <div className="space-y-2">
                 <button onClick={() => closeSet(setEndWinner)}
-                  className="w-full py-4 bg-primary text-black font-black uppercase tracking-widest text-xs rounded-2xl active:scale-95 transition-all">
-                  {gameState.sets[setEndWinner] + 1 >= SETS_TO_WIN ? 'Finish Match' : 'Next Set'}
+                  className="w-full h-14 bg-primary text-[#0D0F12] font-display font-bold uppercase tracking-[0.12em] text-lg rounded-lg">
+                  {gameState.sets[setEndWinner] + 1 >= SETS_TO_WIN ? t('Finish match') : t('Next set')}
                 </button>
                 <button onClick={handleUndo}
-                  className="w-full py-3 text-white/50 font-bold uppercase tracking-widest text-[10px] rounded-2xl border border-white/10 active:scale-95 transition-all">
-                  Undo last point
-                </button>
+                  className="w-full h-12 border border-line font-display font-bold uppercase tracking-[0.1em] text-sm rounded-lg">{t('Undo last point')}</button>
               </div>
             </motion.div>
           </div>
@@ -386,7 +468,7 @@ export default function App() {
             setNum={setNum}
             initial={gameState.lineups[setNum] ?? defaultLineup(gameState, setNum)}
             onSave={saveLineup}
-            onClose={court.hasLineup ? () => setShowLineup(false) : null}
+            onClose={() => setShowLineup(false)}
           />
         )}
       </AnimatePresence>
@@ -394,105 +476,105 @@ export default function App() {
       {/* CONFIRM MODAL */}
       <AnimatePresence>
         {confirmState && (
-          <div className="fixed inset-0 z-[300] flex items-center justify-center p-6 bg-black/80 backdrop-blur-xl">
+          <div className="fixed inset-0 z-[300] flex items-center justify-center p-6 bg-black/80">
             <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-surface border border-white/10 p-6 rounded-3xl w-full max-w-sm space-y-5">
-              <p className="text-sm text-white/80">{confirmState.message}</p>
+              className="bg-surface border border-line p-6 rounded-2xl w-full max-w-sm space-y-5">
+              <p className="text-base">{confirmState.message}</p>
               <div className="flex gap-2">
                 {confirmState.confirmLabel !== 'OK' && (
                   <button onClick={() => setConfirmState(null)}
-                    className="flex-1 py-3 border border-white/10 text-white/60 font-bold uppercase text-[10px] tracking-widest rounded-xl">Cancel</button>
+                    className="flex-1 h-12 border border-line font-display font-bold uppercase text-sm tracking-[0.1em] rounded-lg">{t('Cancel')}</button>
                 )}
-                <button onClick={() => { confirmState.onConfirm(); setConfirmState(null); }}
-                  className="flex-1 py-3 bg-primary text-black font-black uppercase text-[10px] tracking-widest rounded-xl">{confirmState.confirmLabel}</button>
+                {/* Close first, so onConfirm can open a follow-up message */}
+                <button onClick={() => { const c = confirmState; setConfirmState(null); c.onConfirm(); }}
+                  className="flex-1 h-12 bg-primary text-[#0D0F12] font-display font-bold uppercase text-sm tracking-[0.1em] rounded-lg">{confirmState.confirmLabel}</button>
               </div>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
 
-      {/* ROSTER MODAL */}
+      {/* TEAM WINDOW */}
       <AnimatePresence>
         {showConfig && (
-          <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-xl">
-            <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 100, opacity: 0 }}
-              className="bg-surface border border-white/10 p-5 sm:p-8 rounded-t-3xl sm:rounded-3xl w-full max-w-lg shadow-2xl space-y-6 max-h-[92dvh] overflow-y-auto">
-              <div className="flex justify-between items-start">
-                <div>
-                  <h3 className="text-2xl sm:text-3xl font-black italic uppercase tracking-tighter text-primary">Roster</h3>
-                  <p className="text-[10px] opacity-50 uppercase tracking-widest mt-1 font-mono">
-                    {gameState.players.length} players · OH outside · MB middle · OPP opposite · S setter · L libero
-                  </p>
+          <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/80">
+            <motion.div initial={{ y: 60, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 60, opacity: 0 }} transition={{ duration: 0.15 }}
+              className="bg-surface border border-line p-5 sm:p-7 rounded-t-2xl sm:rounded-2xl w-full max-w-xl shadow-2xl space-y-5 max-h-[92dvh] overflow-y-auto">
+              <div className="flex justify-between items-center">
+                <span className="font-display text-3xl font-bold uppercase tracking-[0.04em]">{t('Team')}</span>
+                <div className="flex items-center gap-2">
+                  <div className="flex rounded-lg border border-line overflow-hidden" role="group" aria-label="Language">
+                    {(['de', 'en'] as Lang[]).map(l => (
+                      <button key={l} onClick={() => changeLang(l)}
+                        className={`h-9 px-3 font-display font-bold text-sm tracking-[0.1em] uppercase ${lang === l ? 'bg-primary text-[#0D0F12]' : 'text-mute'}`}>{l}</button>
+                    ))}
+                  </div>
+                  <button onClick={() => setShowConfig(false)} aria-label="Close" className="w-9 h-9 rounded-lg border border-line flex items-center justify-center"><XCircle className="w-5 h-5" /></button>
                 </div>
-                <button onClick={() => setShowConfig(false)} className="p-2 hover:bg-white/10 rounded-full"><XCircle className="w-6 h-6" /></button>
               </div>
 
-              <input type="text" value={gameState.opponentName}
-                onChange={e => setGameState(prev => ({ ...prev, opponentName: e.target.value }))}
-                placeholder="Opponent name (optional)"
-                className="w-full bg-white/5 border-2 border-white/10 focus:border-secondary p-3 rounded-xl outline-none font-bold uppercase text-sm" />
+              {/* Team switcher */}
+              <div className="flex flex-wrap gap-2 items-center">
+                {teams.map(x => (
+                  <div key={x.id} className="relative">
+                    <button onClick={() => switchTeam(x.id)} disabled={x.id !== teamId && matchStarted}
+                      className={`h-10 pl-3.5 ${x.id !== teamId && !matchStarted ? 'pr-8' : 'pr-3.5'} rounded-lg font-display font-bold uppercase tracking-[0.06em] disabled:opacity-35 ${x.id === teamId ? 'border-[1.5px] border-primary text-primary' : 'border border-line'}`}>{x.name || t('Team')}</button>
+                    {x.id !== teamId && !matchStarted && (
+                      <button onClick={() => deleteTeam(x.id)} aria-label={t('Delete')} className="absolute right-1.5 top-2.5 text-mute hover:text-bad"><Trash2 className="w-4 h-4" /></button>
+                    )}
+                  </div>
+                ))}
+                <button onClick={addTeam} className="h-10 px-3 rounded-lg border border-dashed border-line font-display font-bold uppercase text-sm text-mute flex items-center gap-1"><Plus className="w-4 h-4" /> {t('Team')}</button>
+                {matchStarted && teams.length > 1 && <InfoDot light text={t('To switch team, start a new match first.')} />}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <input type="text" value={team.name} onChange={e => renameTeam(e.target.value)} placeholder={t('Team name')} aria-label={t('Team name')}
+                  className="bg-card border border-line focus:border-primary h-11 px-3 rounded-lg outline-none font-display font-bold uppercase" />
+                <input type="text" value={gameState.opponentName} onChange={e => setGameState(prev => ({ ...prev, opponentName: e.target.value }))}
+                  placeholder={t('Opponent')} aria-label={t('Opponent')}
+                  className="bg-card border border-line focus:border-secondary h-11 px-3 rounded-lg outline-none font-display font-bold uppercase" />
+              </div>
 
               <div className="space-y-2">
                 {gameState.players.map((p, idx) => (
-                  <div key={p.id} className="rounded-xl border border-white/10 bg-white/[0.02] p-2 space-y-2">
-                    <div className="flex gap-2">
-                      <input type="text" inputMode="numeric" value={p.number} maxLength={3}
-                        onChange={e => updatePlayer(p.id, { number: e.target.value.replace(/[^0-9]/g, '') })}
-                        placeholder="#" aria-label="Jersey number"
-                        className="w-12 bg-white/5 border border-white/10 focus:border-primary p-2 rounded-lg outline-none font-mono font-bold text-center text-sm" />
-                      <input type="text" value={p.name}
-                        onChange={e => updatePlayer(p.id, { name: e.target.value })}
-                        placeholder={`Player ${p.slot ?? idx + 1}`} aria-label="Player name"
-                        className="flex-1 min-w-0 bg-white/5 border border-white/10 focus:border-primary p-2 rounded-lg outline-none font-bold uppercase text-sm" />
-                      <button onClick={() => removePlayer(p.id)} aria-label="Remove player"
-                        className="p-2 text-white/30 hover:text-danger rounded-lg"><Trash2 className="w-4 h-4" /></button>
-                    </div>
-                    <div className="flex gap-1 p-0.5 bg-white/5 rounded-lg">
+                  <div key={p.id} className="flex gap-2 items-center">
+                    <input type="text" inputMode="numeric" value={p.number} maxLength={3}
+                      onChange={e => updatePlayer(p.id, { number: e.target.value.replace(/[^0-9]/g, '') })}
+                      placeholder="#" aria-label={t('Jersey number')}
+                      className="w-12 bg-card border border-line focus:border-primary h-10 rounded-lg outline-none font-display font-bold text-center" />
+                    <input type="text" value={p.name} onChange={e => updatePlayer(p.id, { name: e.target.value })}
+                      placeholder={t('Player {n}', { n: p.slot ?? idx + 1 })} aria-label={t('Player name')}
+                      className="flex-1 min-w-0 bg-card border border-line focus:border-primary h-10 px-3 rounded-lg outline-none font-display font-bold uppercase" />
+                    <div className="flex rounded-lg border border-line overflow-hidden shrink-0">
                       {ROLES.map(r => (
                         <button key={r} onClick={() => updatePlayer(p.id, { role: r })}
-                          className={`flex-1 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all ${p.role === r ? 'bg-white text-black' : 'text-white/40'}`}>
-                          {ROLE_SHORT[r]}
-                        </button>
+                          className={`h-10 w-9 sm:w-10 font-display text-xs font-bold ${p.role === r ? 'bg-ink text-[#0B0C0E]' : 'text-mute'}`}>{t(ROLE_SHORT[r])}</button>
                       ))}
                     </div>
+                    <button onClick={() => removePlayer(p.id)} aria-label={t('Remove player')} className="p-1.5 text-mute hover:text-bad"><Trash2 className="w-4 h-4" /></button>
                   </div>
                 ))}
                 <button onClick={addPlayer}
-                  className="w-full py-3 border border-dashed border-white/15 rounded-xl text-[10px] font-bold uppercase tracking-widest text-white/50 flex items-center justify-center gap-1.5">
-                  <Plus className="w-3 h-3" /> Add Player
+                  className="w-full h-11 border border-dashed border-line rounded-lg font-display text-sm font-bold uppercase tracking-[0.1em] text-mute flex items-center justify-center gap-1.5">
+                  <Plus className="w-4 h-4" /> {t('Add player')}
                 </button>
               </div>
 
-              <div className="space-y-3 border-t border-white/5 pt-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold uppercase tracking-wider text-white/60">Subs per set</span>
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => setGameState(prev => ({ ...prev, subLimit: Math.max(0, prev.subLimit - 1) }))} className="p-1.5 border border-white/10 rounded-lg"><Minus className="w-3 h-3" /></button>
-                    <span className="w-6 text-center font-mono font-bold">{gameState.subLimit}</span>
-                    <button onClick={() => setGameState(prev => ({ ...prev, subLimit: prev.subLimit + 1 }))} className="p-1.5 border border-white/10 rounded-lg"><Plus className="w-3 h-3" /></button>
-                  </div>
+              <div className="flex items-center justify-between border-t border-line pt-4">
+                <span className="font-display text-sm font-bold uppercase tracking-[0.12em] text-mute">{t('Subs per set')}</span>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setGameState(prev => ({ ...prev, subLimit: Math.max(0, prev.subLimit - 1) }))} aria-label="−" className="w-9 h-9 border border-line rounded-lg flex items-center justify-center"><Minus className="w-4 h-4" /></button>
+                  <span className="w-6 text-center font-display text-lg font-bold">{gameState.subLimit}</span>
+                  <button onClick={() => setGameState(prev => ({ ...prev, subLimit: prev.subLimit + 1 }))} aria-label="+" className="w-9 h-9 border border-line rounded-lg flex items-center justify-center"><Plus className="w-4 h-4" /></button>
                 </div>
-                <button onClick={() => setGameState(prev => ({ ...prev, autoScore: !prev.autoScore }))}
-                  className="w-full flex items-center justify-between text-left">
-                  <span>
-                    <span className="block text-xs font-bold uppercase tracking-wider text-white/60">Auto-score from stats</span>
-                    <span className="block text-[10px] text-white/30 mt-0.5">Serve # / attack # = point us. Serve − / attack − = point them.</span>
-                  </span>
-                  <span className={`shrink-0 ml-3 w-10 h-6 rounded-full p-0.5 transition-all ${gameState.autoScore ? 'bg-success' : 'bg-white/15'}`}>
-                    <span className={`block w-5 h-5 rounded-full bg-white transition-all ${gameState.autoScore ? 'translate-x-4' : ''}`} />
-                  </span>
-                </button>
               </div>
 
-              <div className="space-y-3 pt-2">
-                <button onClick={() => setShowConfig(false)}
-                  className="w-full p-4 bg-primary text-black rounded-2xl font-black uppercase text-xs tracking-widest active:scale-95 transition-all">
-                  Save & Start
-                </button>
+              <div className="flex gap-2 pt-1">
                 <button onClick={newMatch}
-                  className="w-full p-3 bg-danger/10 text-danger border border-danger/20 rounded-2xl font-bold uppercase text-[10px] tracking-widest active:scale-95 transition-all">
-                  New Match (clear stats)
-                </button>
+                  className="h-14 px-4 rounded-lg border border-line font-display font-bold uppercase text-sm tracking-[0.1em]">{t('New match')}</button>
+                <button onClick={() => setShowConfig(false)}
+                  className="flex-1 h-14 bg-primary text-[#0D0F12] rounded-lg font-display font-bold uppercase text-lg tracking-[0.12em]">{t('Done')}</button>
               </div>
             </motion.div>
           </div>

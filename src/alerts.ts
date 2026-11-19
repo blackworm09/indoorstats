@@ -2,6 +2,7 @@
 // Thresholds are relative: "Δ below the team's own match average, after N_min actions".
 import { GameState, MatchEvent, StatEvent } from './types';
 import { getSetLimit, playerLabel, rotationTable } from './utils';
+import { t } from './i18n';
 
 export const N_MIN = 5;      // no rate before this many actions
 export const WINDOW = 10;    // "recent" window (actions)
@@ -102,23 +103,23 @@ export function computeAlerts(state: GameState, rotation: number | null): Alert[
     const lastNeg = last.filter(e => outcome(e) === 'neg').length;
     const streak = (() => { let k = 0; for (let i = mine.length - 1; i >= 0 && outcome(mine[i]) === 'neg'; i--) k++; return k; })();
     if (streak >= STREAK) {
-      alerts.push({ id: `A1s-${id}`, severity: 80 + streak, tone: 'bad', text: `${name(id)}: ${streak} errors/blocked in a row.` });
+      alerts.push({ id: `A1s-${id}`, severity: 80 + streak, tone: 'bad', text: t('{who}: {n} errors/blocked in a row.', { who: name(id), n: streak }) });
     } else if (last.length >= N_MIN && lastNeg / last.length >= teamNegRate + DELTA) {
-      alerts.push({ id: `A1-${id}`, severity: 60 + Math.round((lastNeg / last.length - teamNegRate) * 100), tone: 'bad', text: `${name(id)}: ${lastNeg} errors/blocked in the last ${last.length}.` });
+      alerts.push({ id: `A1-${id}`, severity: 60 + Math.round((lastNeg / last.length - teamNegRate) * 100), tone: 'bad', text: t('{who}: {n} errors/blocked in the last {m}.', { who: name(id), n: lastNeg, m: last.length }) });
     }
 
     // A2 Attacker doesn't score
     if (m.att >= N_MIN) {
       const kr = m.kills / m.att;
-      if (m.kills === 0) alerts.push({ id: `A2-${id}`, severity: 65 + m.att, tone: 'bad', text: `${name(id)}: 0 kills in ${m.att} attacks.` });
-      else if (kr <= teamKillRate - DELTA) alerts.push({ id: `A2-${id}`, severity: 50 + Math.round((teamKillRate - kr) * 100), tone: 'bad', text: `${name(id)}: kill rate ${pct(kr)} (team ${pct(teamKillRate)}).` });
+      if (m.kills === 0) alerts.push({ id: `A2-${id}`, severity: 65 + m.att, tone: 'bad', text: t('{who}: 0 kills in {n} attacks.', { who: name(id), n: m.att }) });
+      else if (kr <= teamKillRate - DELTA) alerts.push({ id: `A2-${id}`, severity: 50 + Math.round((teamKillRate - kr) * 100), tone: 'bad', text: t('{who}: kill rate {a} (team {b}).', { who: name(id), a: pct(kr), b: pct(teamKillRate) }) });
     }
 
     // A3 Attacker weak in the current rotation
     if (rotation && m.eff !== null) {
       const r = effOf(mine.filter(e => e.rot === rotation));
       if (r.att >= N_MIN && r.eff! <= m.eff - DELTA) {
-        alerts.push({ id: `A3-${id}`, severity: 90 + Math.round((m.eff - r.eff!) * 100) / 10, tone: 'bad', text: `${name(id)} ${pct(r.eff!)} in R${rotation} (${r.att} swings, match ${pct(m.eff)}).` });
+        alerts.push({ id: `A3-${id}`, severity: 90 + Math.round((m.eff - r.eff!) * 100) / 10, tone: 'bad', text: t('{who} {a} in R{r} ({n} swings, match {b}).', { who: name(id), a: pct(r.eff!), r: rotation, n: r.att, b: pct(m.eff) }) });
       }
     }
   });
@@ -130,7 +131,7 @@ export function computeAlerts(state: GameState, rotation: number | null): Alert[
     const r = rows[rotation - 1];
     const teamSo = so.won / so.total;
     if (r.soTotal >= N_MIN && r.soWon / r.soTotal <= teamSo - DELTA) {
-      alerts.push({ id: 'A4', severity: 95, tone: 'bad', text: `Side-out in R${rotation}: ${r.soWon} of ${r.soTotal} (${pct(r.soWon / r.soTotal)}, team ${pct(teamSo)}).` });
+      alerts.push({ id: 'A4', severity: 95, tone: 'bad', text: t('Side-out in R{r}: {w} of {n} ({a}, team {b}).', { r: rotation, w: r.soWon, n: r.soTotal, a: pct(r.soWon / r.soTotal), b: pct(teamSo) }) });
     }
   }
 
@@ -138,7 +139,7 @@ export function computeAlerts(state: GameState, rotation: number | null): Alert[
   const inSys = effOf(info.filter(a => a.phase === 'in').map(a => a.ev));
   const outSys = effOf(info.filter(a => a.phase === 'out').map(a => a.ev));
   if (inSys.att >= N_MIN && outSys.att >= N_MIN && outSys.eff! <= inSys.eff! - DELTA) {
-    alerts.push({ id: 'A5', severity: 55, tone: 'bad', text: `Out of system: team attack ${pct(outSys.eff!)} (in system ${pct(inSys.eff!)}).` });
+    alerts.push({ id: 'A5', severity: 55, tone: 'bad', text: t('Out of system: team attack {a} (in system {b}).', { a: pct(outSys.eff!), b: pct(inSys.eff!) }) });
   }
 
   // A6 One attacker carries the load (last W team attacks)
@@ -147,13 +148,13 @@ export function computeAlerts(state: GameState, rotation: number | null): Alert[
     const counts: Record<string, number> = {};
     lastTeam.forEach(e => { counts[e.playerId] = (counts[e.playerId] ?? 0) + 1; });
     const [top, n] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
-    if (n >= Math.ceil(WINDOW / 2)) alerts.push({ id: 'A6', severity: 40 + n, tone: 'neutral', text: `${name(top)} took ${n} of the last ${WINDOW} attacks. Predictable?` });
+    if (n >= Math.ceil(WINDOW / 2)) alerts.push({ id: 'A6', severity: 40 + n, tone: 'neutral', text: t('{who} took {n} of the last {m} attacks. Predictable?', { who: name(top), n, m: WINDOW }) });
   }
 
   // A7 Crunch time attack (match)
   const crunch = effOf(info.filter(a => a.crunch).map(a => a.ev));
   if (crunch.att >= N_MIN && team.eff !== null && crunch.eff! <= team.eff - DELTA) {
-    alerts.push({ id: 'A7', severity: 70, tone: 'bad', text: `Crunch time: team attack ${pct(crunch.eff!)} (match ${pct(team.eff)}).` });
+    alerts.push({ id: 'A7', severity: 70, tone: 'bad', text: t('Crunch time: team attack {a} (match {b}).', { a: pct(crunch.eff!), b: pct(team.eff) }) });
   }
 
   // A8 Pass quality drops: Positive % per player (last W) and in the current rotation
@@ -164,13 +165,13 @@ export function computeAlerts(state: GameState, rotation: number | null): Alert[
       const recent = passes.filter(e => e.playerId === id).slice(-WINDOW);
       if (recent.length < N_MIN) return;
       const pos = recent.filter(isPositivePass).length / recent.length;
-      if (pos <= teamPos - DELTA) alerts.push({ id: `A8-${id}`, severity: 50 + Math.round((teamPos - pos) * 100) / 2, tone: 'bad', text: `${name(id)} passing: ${pct(pos)} positive in the last ${recent.length} (team ${pct(teamPos)}).` });
+      if (pos <= teamPos - DELTA) alerts.push({ id: `A8-${id}`, severity: 50 + Math.round((teamPos - pos) * 100) / 2, tone: 'bad', text: t('{who} passing: {a} positive in the last {n} (team {b}).', { who: name(id), a: pct(pos), n: recent.length, b: pct(teamPos) }) });
     });
     if (rotation) {
       const inRot = passes.filter(e => e.rot === rotation);
       if (inRot.length >= N_MIN) {
         const pos = inRot.filter(isPositivePass).length / inRot.length;
-        if (pos <= teamPos - DELTA) alerts.push({ id: 'A8r', severity: 75, tone: 'bad', text: `Passing in R${rotation}: ${pct(pos)} positive (team ${pct(teamPos)}).` });
+        if (pos <= teamPos - DELTA) alerts.push({ id: 'A8r', severity: 75, tone: 'bad', text: t('Passing in R{r}: {a} positive (team {b}).', { r: rotation, a: pct(pos), b: pct(teamPos) }) });
       }
     }
   }

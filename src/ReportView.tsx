@@ -1,5 +1,6 @@
+import { t } from './i18n';
 import { useMemo, useState } from 'react';
-import { Download, RotateCcw } from 'lucide-react';
+import { Download, RotateCcw, Trash2 } from 'lucide-react';
 import { GameState, ROLE_SHORT, Role, ScaleCode } from './types';
 import { currentSetNumber, formatMatchDate, scoreForSet } from './utils';
 import { EffLine, N_MIN } from './alerts';
@@ -9,7 +10,9 @@ import { InfoDot, PASS_SCALE, SERVE_SCALE, TONE_CLASS } from './RallyView';
 interface ReportViewProps {
   gameState: GameState;
   onExport: () => void;
-  onReset: () => void;
+  onReset: () => void;     // this match: new match. Saved match: delete it
+  past?: boolean;          // viewing a saved match
+  selector?: React.ReactNode;
 }
 
 const pct = (v: number | null) => (v === null ? '–' : `${v < 0 ? '−' : ''}${Math.abs(Math.round(v * 100))}%`);
@@ -27,7 +30,7 @@ function Card({ title, info, children, className = '' }: { title: string; info: 
   );
 }
 
-const Empty = () => <span className="text-sm text-mute">No data yet.</span>;
+const Empty = () => <span className="text-sm text-mute">{t("No data yet.")}</span>;
 
 // Heatmap cell: strong green 40%+, light green 25%+, neutral 0+, red below 0. Faded until N_MIN attempts.
 function HeatCell({ line }: { line: EffLine }) {
@@ -56,13 +59,13 @@ function EffNum({ line }: { line: EffLine }) {
 
 // One small count column per rating, in the rating colours (worst → best)
 function ScaleHead({ scale }: { scale: typeof PASS_SCALE }) {
-  return <>{scale.map(sc => <span key={sc.code} className={`h-5 rounded-sm flex items-center justify-center font-display text-xs font-bold ${TONE_CLASS[sc.tone]}`} title={sc.label}>{sc.sym}</span>)}</>;
+  return <>{scale.map(sc => <span key={sc.code} className={`h-5 rounded-sm flex items-center justify-center font-display text-xs font-bold ${TONE_CLASS[sc.tone]}`} title={t(sc.label)}>{sc.sym}</span>)}</>;
 }
 function ScaleCounts({ row, scale }: { row: ScaleRow; scale: typeof PASS_SCALE }) {
   return <>{scale.map(sc => <span key={sc.code} className={`text-center font-display text-sm tabular-nums ${row.counts[sc.code] ? '' : 'text-mute/40'}`}>{row.counts[sc.code]}</span>)}</>;
 }
 
-export default function ReportView({ gameState, onExport, onReset }: ReportViewProps) {
+export default function ReportView({ gameState, onExport, onReset, past, selector }: ReportViewProps) {
   const [setFilter, setSetFilter] = useState<number | null>(null);
   const setNum = currentSetNumber(gameState);
   const setsWithData = Array.from(new Set(gameState.events.map(e => e.set))).sort((a, b) => a - b);
@@ -88,7 +91,7 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
 
   const filterBtn = (label: string, value: number | null) => (
     <button key={label} onClick={() => setSetFilter(value)}
-      className={`h-9 px-3.5 rounded-md font-display text-sm font-bold tracking-[0.1em] uppercase ${setFilter === value ? 'border border-primary text-ink' : 'border border-line text-mute'}`}>{label}</button>
+      className={`h-9 px-3.5 rounded-md font-display text-sm font-bold tracking-[0.1em] uppercase ${setFilter === value ? 'border border-primary text-ink' : 'border border-line text-mute'}`}>{t(label)}</button>
   );
   const th = 'font-display text-[11px] font-bold tracking-[0.12em] uppercase text-mute';
   const name = 'font-display text-base font-bold uppercase truncate';
@@ -108,31 +111,32 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
             </span>
           </div>
         </div>
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5 items-center">
+          {selector}
           {filterBtn('Match', null)}
-          {setsWithData.map(s => filterBtn(`Set ${s}`, s))}
+          {setsWithData.map(s => filterBtn(t('Set {n}', { n: s }), s))}
         </div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] gap-x-9 gap-y-7">
         {/* Attack × rotation */}
-        <Card title="Attack · Rotation" info="Attack efficiency per attacker and rotation: (kills − errors − blocked) / attempts. Small number = attempts. Faded = under 5. Side-out = rallies won when they serve. Break = rallies won when we serve.">
+        <Card title={t("Attack · Rotation")} info={t("Attack efficiency per attacker and rotation: (kills − errors − blocked) / attempts. Small number = attempts. Faded = under 5. Side-out = rallies won when they serve. Break = rallies won when we serve.")}>
           {heat.rows.length === 0 ? <Empty /> : (
             <div className="overflow-x-auto">
               <div className="grid grid-cols-[110px_repeat(6,minmax(48px,1fr))_68px] gap-1.5 items-center min-w-[520px]">
                 <span />
                 {[1, 2, 3, 4, 5, 6].map(r => <span key={r} className={`${th} text-center`}>R{r}</span>)}
-                <span className={`${th} text-center`}>All</span>
+                <span className={`${th} text-center`}>{t("All")}</span>
                 {heat.rows.map(r => (
                   <div key={r.id} className="contents" data-heat={r.name}>
-                    <span className={name}>{r.name} <span className="text-[11px] text-mute">{ROLE_SHORT[r.role as Role]}</span></span>
+                    <span className={name}>{r.name} <span className="text-[11px] text-mute">{t(ROLE_SHORT[r.role as Role])}</span></span>
                     {r.byRot.map((l, k) => <HeatCell key={k} line={l} />)}
                     <span className="text-center font-display text-lg font-bold tabular-nums">{pct(r.all.eff)}</span>
                   </div>
                 ))}
                 {([['Side-out', heat.sideOut, heat.so], ['Break', heat.breakPt, heat.bp]] as const).map(([label, vals, raw]) => (
                   <div key={label} className="contents">
-                    <span className={th}>{label}</span>
+                    <span className={th}>{t(label)}</span>
                     {vals.map((v, k) => (
                       <span key={k} className={`text-center font-display text-base font-bold tabular-nums ${v === null ? 'text-mute' : v < 0.45 ? 'text-bad' : ''}`} title={`${raw[k][0]} of ${raw[k][1]}`}>
                         {pct(v)}<span className="block text-[10px] font-semibold text-mute">{raw[k][1] ? `${raw[k][0]}/${raw[k][1]}` : ''}</span>
@@ -147,11 +151,11 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
         </Card>
 
         {/* Attack × pass */}
-        <Card title="Attack · Pass" info="In system = first attack after a # or + pass. Out of system = after ! or −. Transition = every other attack (after our serve, a dig or a recycle). Small number = attempts.">
+        <Card title={t("Attack · Pass")} info={t("In system = first attack after a # or + pass. Out of system = after ! or −. Transition = every other attack (after our serve, a dig or a recycle). Small number = attempts.")}>
           {phase.length === 0 ? <Empty /> : (
             <div className="grid grid-cols-[90px_repeat(3,minmax(0,1fr))] gap-x-2 gap-y-3 items-center">
               <span />
-              {['In system', 'Out of system', 'Transition'].map(h => <span key={h} className={th}>{h}</span>)}
+              {['In system', 'Out of system', 'Transition'].map(h => <span key={h} className={th}>{t(h)}</span>)}
               {phase.map(r => (
                 <div key={r.id} className="contents" data-phase={r.name}>
                   <span className={`${name} ${r.id === 'team' ? 'text-primary' : ''}`}>{r.name}</span>
@@ -163,11 +167,11 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
         </Card>
 
         {/* Passing */}
-        <Card title="Passing" info="Positive % = # and +. Perfect % = #. Error % = = (aced). Coloured columns = count per rating. Best Positive % first.">
+        <Card title={t("Passing")} info={t("Positive % = # and +. Perfect % = #. Error % = = (aced). Coloured columns = count per rating. Best Positive % first.")}>
           {pass.length === 0 ? <Empty /> : (
             <div className="grid grid-cols-[84px_32px_repeat(3,48px)_repeat(6,minmax(22px,1fr))] gap-x-1.5 gap-y-2.5 items-center overflow-x-auto">
               <span /><span className={`${th} text-right`}>N</span>
-              <span className={`${th} text-right`}>Pos</span><span className={`${th} text-right`}>Perf</span><span className={`${th} text-right`}>Err</span><ScaleHead scale={PASS_SCALE} />
+              <span className={`${th} text-right`}>{t("Pos")}</span><span className={`${th} text-right`}>{t("Perf")}</span><span className={`${th} text-right`}>{t("Err")}</span><ScaleHead scale={PASS_SCALE} />
               {pass.map(r => (
                 <div key={r.id} className="contents" data-pass={r.name}>
                   <span className={`${name} ${r.id === 'team' ? 'text-primary' : ''}`}>{r.name}</span>
@@ -183,11 +187,11 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
         </Card>
 
         {/* Serving */}
-        <Card title="Serving" info="Rated by how they passed it. Pressure % = serves that put them out of system or worse for them (+, / and aces). Coloured columns = count per rating. Best Pressure % first.">
+        <Card title={t("Serving")} info={t("Rated by how they passed it. Pressure % = serves that put them out of system or worse for them (+, / and aces). Coloured columns = count per rating. Best Pressure % first.")}>
           {serve.length === 0 ? <Empty /> : (
             <div className="grid grid-cols-[84px_32px_repeat(3,48px)_repeat(6,minmax(22px,1fr))] gap-x-1.5 gap-y-2.5 items-center overflow-x-auto">
               <span /><span className={`${th} text-right`}>N</span>
-              <span className={`${th} text-right`}>Ace</span><span className={`${th} text-right`}>Err</span><span className={`${th} text-right`}>Press</span><ScaleHead scale={SERVE_SCALE} />
+              <span className={`${th} text-right`}>{t("Ace")}</span><span className={`${th} text-right`}>{t("Err")}</span><span className={`${th} text-right`}>{t("Press")}</span><ScaleHead scale={SERVE_SCALE} />
               {serve.map(r => (
                 <div key={r.id} className="contents" data-serve={r.name}>
                   <span className={`${name} ${r.id === 'team' ? 'text-primary' : ''}`}>{r.name}</span>
@@ -203,13 +207,13 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
         </Card>
 
         {/* Points */}
-        <Card title="Points" info="Where our points came from, and how we gave points away.">
+        <Card title={t("Points")} info={t("Where our points came from, and how we gave points away.")}>
           <div className="grid grid-cols-2 gap-6">
             {([['Won', points.won, 'text-good'], ['Lost', points.lost, 'text-bad']] as const).map(([label, list, tone]) => (
               <div key={label} className="flex flex-col gap-1.5">
-                <span className={`${th} ${tone}`}>{label} · {list.reduce((a, [, n]) => a + n, 0)}</span>
+                <span className={`${th} ${tone}`}>{t(label)} · {list.reduce((a, [, n]) => a + n, 0)}</span>
                 {list.filter(([, n]) => n > 0).map(([l, n]) => (
-                  <div key={l} className="flex justify-between text-sm border-t border-line pt-1.5"><span>{l}</span><span className="font-display font-bold tabular-nums">{n}</span></div>
+                  <div key={l} className="flex justify-between text-sm border-t border-line pt-1.5"><span>{t(l)}</span><span className="font-display font-bold tabular-nums">{n}</span></div>
                 ))}
               </div>
             ))}
@@ -217,10 +221,10 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
         </Card>
 
         {/* Setter */}
-        <Card title="Setter" info="Every teammate attack counts as a set. Assist = the attack was a kill. Eff = attack efficiency of the hitters she set.">
+        <Card title={t("Setter")} info={t("Every teammate attack counts as a set. Assist = the attack was a kill. Eff = attack efficiency of the hitters she set.")}>
           {setters.length === 0 ? <Empty /> : (
             <div className="grid grid-cols-[90px_repeat(3,64px)] gap-x-2 gap-y-2 items-center">
-              <span /><span className={`${th} text-right`}>Sets</span><span className={`${th} text-right`}>Assists</span><span className={`${th} text-right`}>Eff</span>
+              <span /><span className={`${th} text-right`}>{t("Sets")}</span><span className={`${th} text-right`}>{t("Assists")}</span><span className={`${th} text-right`}>{t("Eff")}</span>
               {setters.map(r => (
                 <div key={r.id} className="contents">
                   <span className={name}>{r.name}</span>
@@ -233,7 +237,7 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
           )}
         </Card>
         {/* History */}
-        <Card title="History" info="Every point in order with the score after it, plus subs and timeouts. Orange = our point, purple = theirs." className="xl:col-span-2">
+        <Card title={t("History")} info={t("Every point in order with the score after it, plus subs and timeouts. Orange = our point, purple = theirs.")} className="xl:col-span-2">
           {history.length === 0 ? <Empty /> : (
             <div className="max-h-[440px] overflow-y-auto pr-1 flex flex-col">
               {history.map((h, i) => (
@@ -251,8 +255,8 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
       </div>
 
       <div className="flex flex-wrap gap-2 border-t border-line pt-5">
-        <button onClick={onExport} className="h-11 px-4 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center gap-2"><Download className="w-4 h-4" /> Export (email)</button>
-        <button onClick={onReset} className="h-11 px-4 rounded-lg border border-bad/40 text-bad font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center gap-2"><RotateCcw className="w-4 h-4" /> New match</button>
+        <button onClick={onExport} className="h-11 px-4 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center gap-2"><Download className="w-4 h-4" /> {t("Export (email)")}</button>
+        <button onClick={onReset} className="h-11 px-4 rounded-lg border border-bad/40 text-bad font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center gap-2">{past ? <Trash2 className="w-4 h-4" /> : <RotateCcw className="w-4 h-4" />} {past ? t("Delete match") : t("New match")}</button>
       </div>
     </div>
   );

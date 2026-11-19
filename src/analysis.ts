@@ -2,6 +2,7 @@
 import { GameState, ScaleCode, StatEvent } from './types';
 import { attackInfo, effOf, EffLine, N_MIN, Phase } from './alerts';
 import { playerLabel, rotationTable } from './utils';
+import { t } from './i18n';
 
 export const inSet = (state: GameState, set: number | null): GameState =>
   set === null ? state : { ...state, events: state.events.filter(e => e.set === set) };
@@ -50,7 +51,7 @@ export function attackByPhase(state: GameState, set: number | null): PhaseRow[] 
   const ids = Array.from(new Set(info.map(a => a.ev.playerId)));
   const rows = ids.map(id => ({ id, name: nameOf(state, id), byPhase: line(info.filter(a => a.ev.playerId === id)) }))
     .sort((a, b) => (b.byPhase.in.att + b.byPhase.out.att + b.byPhase.transition.att) - (a.byPhase.in.att + a.byPhase.out.att + a.byPhase.transition.att));
-  return info.length ? [{ id: 'team', name: 'Team', byPhase: line(info) }, ...rows] : [];
+  return info.length ? [{ id: 'team', name: t('Team'), byPhase: line(info) }, ...rows] : [];
 }
 
 // ---------- Pass + serve on the scale ----------
@@ -67,7 +68,7 @@ function scaleRows(state: GameState, set: number | null, skill: 'pass' | 'serve'
   };
   const ids = Array.from(new Set(list.map(e => e.playerId)));
   const rows = ids.map(id => build(id, nameOf(state, id), list.filter(e => e.playerId === id))).sort((a, b) => b.n - a.n);
-  return list.length ? [build('team', 'Team', list), ...rows] : [];
+  return list.length ? [build('team', t('Team'), list), ...rows] : [];
 }
 export const passRows = (s: GameState, set: number | null) => scaleRows(s, set, 'pass');
 export const serveRows = (s: GameState, set: number | null) => scaleRows(s, set, 'serve');
@@ -125,6 +126,7 @@ export function bestFirst<T>(rows: T[], line: (r: T) => EffLine): T[] {
 export interface LogEntry { set: number; time: number; kind: 'point' | 'sub' | 'timeout'; winner?: 'own' | 'opponent'; own: number; opponent: number; text: string }
 
 const CODE_WORD: Record<string, string> = { '-': '−' };
+const passCtx = (c: string) => ` · ${t('pass')} ${CODE_WORD[c] ?? c}`;
 export function historyLog(state: GameState, set: number | null): LogEntry[] {
   const out: LogEntry[] = [];
   const score: Record<number, { own: number; opponent: number }> = {};
@@ -132,31 +134,31 @@ export function historyLog(state: GameState, set: number | null): LogEntry[] {
   state.events.forEach(e => {
     if (set !== null && e.set !== set) return;
     const sc = (score[e.set] ??= { own: 0, opponent: 0 });
-    const ctx = (rallyId?: string) => { const p = rallyId ? passOf[rallyId] : undefined; return p && p.code && p.code !== '=' ? ` · pass ${CODE_WORD[p.code] ?? p.code}` : ''; };
+    const ctx = (rallyId?: string) => { const p = rallyId ? passOf[rallyId] : undefined; return p && p.code && p.code !== '=' ? passCtx(p.code) : ''; };
     const push = (winner: 'own' | 'opponent', text: string) => { sc[winner]++; out.push({ set: e.set, time: e.timestamp, kind: 'point', winner, own: sc.own, opponent: sc.opponent, text }); };
     if (e.kind === 'stat') {
       if (e.skill === 'pass' && e.rallyId) passOf[e.rallyId] = e;
       if (!e.point) return;
       const who = nameOf(state, e.playerId);
       const c = e.code ?? (e.grade === 'plus' ? (e.skill === 'serve' ? '#' : 'kill') : e.skill === 'serve' ? '=' : 'err');
-      const text = e.skill === 'serve' ? (c === '#' ? `${who} ace` : `${who} serve error`)
-        : c === 'kill' ? `${who} kill${ctx(e.rallyId)}` : c === 'blk' ? `${who} blocked${ctx(e.rallyId)}` : `${who} attack error${ctx(e.rallyId)}`;
+      const text = e.skill === 'serve' ? (c === '#' ? t('{who} ace', { who }) : t('{who} serve error', { who }))
+        : (c === 'kill' ? t('{who} kill', { who }) : c === 'blk' ? t('{who} blocked', { who }) : t('{who} attack error', { who })) + ctx(e.rallyId);
       push(e.point, text);
     } else if (e.kind === 'point') {
       const passer = e.rallyId && passOf[e.rallyId] ? nameOf(state, passOf[e.rallyId].playerId) : '';
       const text = ({
-        opp_attack_point: `Their kill${ctx(e.rallyId)}`,
-        opp_ace: `Their ace${passer ? ` (${passer})` : ''}`,
-        opp_attack_error: 'Their attack error',
-        opp_serve_error: 'Their serve error',
-        opp_blocked: 'Our block',
-        own_error: `${e.playerId ? nameOf(state, e.playerId) : 'Our'} unforced error`,
-      } as Record<string, string>)[e.reason ?? ''] ?? (e.team === 'own' ? 'Their fault' : 'Our fault');
+        opp_attack_point: t('Their kill') + ctx(e.rallyId),
+        opp_ace: t('Their ace') + (passer ? ` (${passer})` : ''),
+        opp_attack_error: t('Their attack error'),
+        opp_serve_error: t('Their serve error'),
+        opp_blocked: t('Our block'),
+        own_error: e.playerId ? t('{who} unforced error', { who: nameOf(state, e.playerId) }) : t('Unforced error'),
+      } as Record<string, string>)[e.reason ?? ''] ?? (e.team === 'own' ? t('Their fault') : t('Our fault'));
       push(e.team, text);
     } else if (e.kind === 'sub' && e.counts) {
-      out.push({ set: e.set, time: e.timestamp, kind: 'sub', own: sc.own, opponent: sc.opponent, text: `Sub: ${nameOf(state, e.inId)} for ${nameOf(state, e.outId)}` });
+      out.push({ set: e.set, time: e.timestamp, kind: 'sub', own: sc.own, opponent: sc.opponent, text: t('Sub: {a} for {b}', { a: nameOf(state, e.inId), b: nameOf(state, e.outId) }) });
     } else if (e.kind === 'timeout') {
-      out.push({ set: e.set, time: e.timestamp, kind: 'timeout', own: sc.own, opponent: sc.opponent, text: e.team === 'own' ? 'Timeout us' : 'Timeout them' });
+      out.push({ set: e.set, time: e.timestamp, kind: 'timeout', own: sc.own, opponent: sc.opponent, text: e.team === 'own' ? t('Timeout us') : t('Timeout them') });
     }
   });
   return out;

@@ -125,6 +125,7 @@ export interface GameState {
   pending: PendingRally | null;
   lineups: Record<number, SetLineup>;
   templateLineup?: SetLineup | null; // last used lineup, prefilled for the next set/match
+  teamId?: string;
 }
 
 // Buttons in quick-tap mode
