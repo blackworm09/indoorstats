@@ -10,7 +10,7 @@ import RallyView from './RallyView';
 import ReportView from './ReportView';
 import { courtState, defaultLineup } from './court';
 import { LineupSheet } from './Lineup';
-import { attackByPhase, attackByRotation, passRows, serveRows } from './analysis';
+import { attackByPhase, attackByRotation, historyLog, passRows, serveRows } from './analysis';
 
 const MATCH_KEY = 'indoorstats_match';
 const ROSTER_KEY = 'indoorstats_roster';
@@ -157,7 +157,12 @@ export default function App() {
         const h = p.history[p.history.length - 1];
         return { ...prev, pending: { ...p, step: h.step, actions: p.actions.slice(0, h.actionCount), trail: (p.trail ?? []).slice(0, h.trailCount ?? 0), history: p.history.slice(0, -1) } };
       }
-      if (lastIdx < 0) return p ? { ...prev, pending: null } : prev;
+      if (lastIdx < 0) {
+        if (p) return { ...prev, pending: null };
+        // Nothing played yet: undo the first-serve choice so it can be picked again
+        const lu = prev.lineups?.[s];
+        return lu?.firstServe ? { ...prev, lineups: { ...prev.lineups, [s]: { ...lu, firstServe: null } } } : prev;
+      }
       const last = prev.events[lastIdx];
       // A whole rally comes off together
       const events = last.rallyId
@@ -258,6 +263,8 @@ export default function App() {
     attackByRotation(gameState, null).rows.forEach(r => { csv += `${r.name},${r.byRot.map(l => l.att ? `${p100(l.eff)} / ${l.att}` : '').join(',')},${p100(r.all.eff)} / ${r.all.att}\n`; });
     csv += `\nATTACK BY PASS (eff / attempts)\nPlayer,In system,Out of system,Transition\n`;
     attackByPhase(gameState, null).forEach(r => { const f = (l: { eff: number | null; att: number }) => (l.att ? `${p100(l.eff)} / ${l.att}` : ''); csv += `${r.name},${f(r.byPhase.in)},${f(r.byPhase.out)},${f(r.byPhase.transition)}\n`; });
+    csv += `\nEVENT LOG (time = when the scout tapped)\nTime,Set,Score,Event\n`;
+    historyLog(gameState, null).forEach(h => { csv += `${new Date(h.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })},${h.set},${h.kind === 'point' ? `${h.own}:${h.opponent}` : ''},${h.text.replace(/,/g, ' ')}\n`; });
     const subject = encodeURIComponent(`IndoorStats Match Report - vs ${opp} - ${date}`);
     window.location.href = `mailto:?subject=${subject}&body=${encodeURIComponent(csv)}`;
   };
@@ -328,9 +335,10 @@ export default function App() {
               onSub={handleSub}
               onUndo={handleUndo}
               onRotate={rotateCourt}
-              canUndo={currentSetEvents.length > 0 || !!(gameState.pending && gameState.pending.set === setNum)}
+              canUndo={currentSetEvents.length > 0 || !!(gameState.pending && gameState.pending.set === setNum) || !!gameState.lineups?.[setNum]?.firstServe}
               court={court}
               onOpenLineup={() => setShowLineup(true)}
+              onFirstServe={team => setGameState(prev => prev.lineups?.[setNum] ? ({ ...prev, lineups: { ...prev.lineups, [setNum]: { ...prev.lineups[setNum], firstServe: team } } }) : prev)}
             />
           </div>
         ) : (

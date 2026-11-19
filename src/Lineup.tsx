@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'motion/react';
-import { X } from 'lucide-react';
+import { RotateCcw, RotateCw, X } from 'lucide-react';
 import { COURT_LAYOUT, Player, Role, ROLE_SHORT, SetLineup } from './types';
 import { playerLabel } from './utils';
 import { InfoDot } from './RallyView';
@@ -13,7 +13,7 @@ interface LineupSheetProps {
   onClose: (() => void) | null; // null = must set a lineup first
 }
 
-type Step = 1 | 2 | 3;
+type Step = 1 | 2; // first serve is picked on the live screen when tracking starts
 
 // After a pick, move counterclockwise around the court (rotation order): P1 → P2 → … → P6 → P1
 const nextEmpty = (positions: (string | null)[], after: number) => {
@@ -99,7 +99,14 @@ export function LineupSheet({ players, setNum, initial, onSave, onClose }: Lineu
   const canNext: Record<Step, boolean> = {
     1: filled === 6,
     2: !lineup.liberoId || (lineup.liberoReplaces.length > 0 && (!twoMode || lineup.libero2Id !== lineup.liberoId)),
-    3: lineup.firstServe !== null,
+  };
+
+  // Same six, different starting rotation (+1 = everyone moves one spot, P2 → P1)
+  const rotateLineup = (delta: number) => {
+    const n = ((delta % 6) + 6) % 6;
+    const positions = lineup.positions.map((_, i) => lineup.positions[(i + n) % 6]);
+    setLineup({ ...lineup, positions });
+    setSlot(null);
   };
 
   const slotRole = slot !== null ? roleFor(players, lineup.positions, slot) : null;
@@ -162,7 +169,7 @@ export function LineupSheet({ players, setNum, initial, onSave, onClose }: Lineu
           <div className="flex items-center justify-between">
             <span className="font-display text-3xl font-bold tracking-[0.06em] uppercase">Set {setNum}</span>
             <div className="flex items-center gap-3">
-              <span className="font-display text-sm font-bold tracking-[0.12em] text-mute">{step}/3</span>
+              <span className="font-display text-sm font-bold tracking-[0.12em] text-mute">{step}/2</span>
               {onClose && <button onClick={onClose} aria-label="Close" className="w-10 h-10 rounded-lg border border-line flex items-center justify-center"><X className="w-5 h-5" /></button>}
             </div>
           </div>
@@ -193,6 +200,13 @@ export function LineupSheet({ players, setNum, initial, onSave, onClose }: Lineu
               </div>
             ))}
           </div>
+          {step === 1 && filled === 6 && (
+            <div className="flex items-center gap-2">
+              <button onClick={() => rotateLineup(-1)} aria-label="Rotate back" className="h-10 px-3 rounded-lg border border-line font-display font-bold text-sm flex items-center gap-1.5"><RotateCcw className="w-4 h-4" /> −1</button>
+              <button onClick={() => rotateLineup(1)} aria-label="Rotate forward" className="h-10 px-3 rounded-lg border border-line font-display font-bold text-sm flex items-center gap-1.5"><RotateCw className="w-4 h-4" /> +1</button>
+              <span className="font-display text-xs font-bold tracking-[0.12em] uppercase text-mute ml-1">Rotation</span>
+            </div>
+          )}
           {step === 1 && filled > 0 && (
             <button onClick={() => { setLineup({ ...lineup, positions: [null, null, null, null, null, null], liberoReplaces: [] }); setSlot(null); }}
               className="self-start font-display text-xs font-bold tracking-[0.12em] uppercase text-mute underline">Clear all</button>
@@ -245,27 +259,18 @@ export function LineupSheet({ players, setNum, initial, onSave, onClose }: Lineu
             </>
           )}
 
-          {step === 3 && (
-            <div className="grid grid-cols-2 gap-2">
-              <button onClick={() => setLineup({ ...lineup, firstServe: 'own' })}
-                className={`h-28 rounded-xl font-display text-xl font-bold tracking-[0.1em] uppercase ${lineup.firstServe === 'own' ? 'bg-primary text-[#0D0F12]' : 'border border-line text-mute'}`}>We serve</button>
-              <button onClick={() => setLineup({ ...lineup, firstServe: 'opponent' })}
-                className={`h-28 rounded-xl font-display text-xl font-bold tracking-[0.1em] uppercase ${lineup.firstServe === 'opponent' ? 'bg-secondary text-[#0D0F12]' : 'border border-line text-mute'}`}>They serve</button>
-            </div>
-          )}
-
           <div className="mt-auto pt-4 flex gap-2">
             {step > 1 && (
               <button onClick={() => setStep((step - 1) as Step)}
                 className="w-28 h-14 rounded-lg border border-line font-display text-base font-bold tracking-[0.12em] uppercase">Back</button>
             )}
-            {step < 3 ? (
-              <button onClick={() => canNext[step] && (step === 1 ? goLibero() : setStep(3))} disabled={!canNext[step]}
+            {step === 1 ? (
+              <button onClick={() => canNext[1] && goLibero()} disabled={!canNext[1]}
                 className="flex-1 h-14 rounded-lg bg-primary text-[#0D0F12] font-display text-lg font-bold tracking-[0.12em] uppercase disabled:opacity-35">
-                {step === 1 && filled < 6 ? `Next · ${filled}/6` : 'Next'}
+                {filled < 6 ? `Next · ${filled}/6` : 'Next'}
               </button>
             ) : (
-              <button onClick={() => canNext[3] && filled === 6 && onSave(lineup)} disabled={!canNext[3] || filled < 6}
+              <button onClick={() => canNext[2] && filled === 6 && onSave(lineup)} disabled={!canNext[2] || filled < 6}
                 className="flex-1 h-14 rounded-lg bg-primary text-[#0D0F12] font-display text-lg font-bold tracking-[0.12em] uppercase disabled:opacity-35">Save</button>
             )}
           </div>

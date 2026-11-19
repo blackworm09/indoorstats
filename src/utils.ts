@@ -341,3 +341,26 @@ export function statsByPosition(state: GameState, playerId: string, set: number 
   Object.values(out).forEach(bySkill => (Object.keys(bySkill) as Skill[]).forEach(k => finish(bySkill[k], k)));
   return out;
 }
+
+// ---------- Sub rules (FIVB) ----------
+// A starter can leave once and come back once, only for her own sub.
+// A sub can come in once and only go back out for the starter she replaced.
+// Returns the players who may legally come in for `outId` in this set.
+export function legalSubsIn(state: GameState, set: number, outId: string, courtIds: (string | null)[]): string[] {
+  const starters = (state.lineups?.[set]?.positions ?? []).filter(Boolean) as string[];
+  const status: Record<string, { s: 'on' | 'out' | 'back' | 'sub-on' | 'sub-done'; tie?: string }> = {};
+  starters.forEach(id => { status[id] = { s: 'on' }; });
+  state.events.forEach(e => {
+    if (e.kind !== 'sub' || e.set !== set || !e.counts) return;
+    const o = status[e.outId];
+    if (o?.s === 'sub-on') { status[e.outId] = { s: 'sub-done' }; status[e.inId] = { s: 'back' }; }
+    else { status[e.outId] = { s: 'out', tie: e.inId }; status[e.inId] = { s: 'sub-on', tie: e.outId }; }
+  });
+  const me = status[outId] ?? { s: 'on' as const };
+  if (me.s === 'sub-on') return me.tie ? [me.tie] : [];
+  if (me.s === 'back') return [];
+  // Starter still on court: any bench player who hasn't played in this set
+  return state.players
+    .filter(p => p.role !== 'libero' && !courtIds.includes(p.id) && !status[p.id])
+    .map(p => p.id);
+}

@@ -5,7 +5,7 @@ import {
   AttackCode, GameState, Grade, MatchEvent, PendingRally, Player, PointReason, RallyStep, RatingCode, ScaleCode, Skill, StatEvent, TeamSide,
   ROLE_LABEL, ROLE_SHORT, COURT_LAYOUT,
 } from './types';
-import { currentSetNumber, playerLabel, setterFor, subsUsed } from './utils';
+import { currentSetNumber, legalSubsIn, playerLabel, setterFor, subsUsed } from './utils';
 import { attackBoard, computeAlerts, EffLine, N_MIN } from './alerts';
 import { CourtState, positionOf } from './court';
 
@@ -19,6 +19,7 @@ interface RallyViewProps {
   canUndo: boolean;
   court: CourtState;
   onOpenLineup: () => void;
+  onFirstServe: (team: TeamSide) => void;
 }
 
 const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -66,8 +67,8 @@ export const ATTACK_SCALE: ScaleItem<AttackCode>[] = [
 
 export const OPP_ATTACK_SCALE: ScaleItem<AttackCode>[] = [
   { code: 'err', sym: '−', label: 'Error', tone: 'poor', info: 'Their attack out or net. +1 us.' },
-  { code: 'blk', sym: '■', label: 'Block', tone: 'rose', info: 'We block it for a point. +1 us.' },
-  { code: 'play', sym: '0', label: 'Dig', tone: 'neu', info: 'We dig it. Our attack next.' },
+  { code: 'blk', sym: '■', label: 'We block', tone: 'rose', info: 'We block it for a point. +1 us.' },
+  { code: 'play', sym: '0', label: 'We dig', tone: 'neu', info: 'We dig it. Our attack next.' },
   { code: 'rec', sym: '↺', label: 'Recycle', tone: 'good', info: 'They keep it alive and attack again.' },
   { code: 'kill', sym: '#', label: 'Kill', tone: 'top', info: 'Their kill. +1 them.' },
 ];
@@ -82,23 +83,61 @@ export function gradeFor(skill: Skill, code: RatingCode): Grade {
 const CODE_TEXT: Record<string, string> = { err: 'error', blk: 'blocked', play: 'in play', rec: 'recycle', kill: 'kill', '-': '−' };
 const codeText = (c: RatingCode) => CODE_TEXT[c] ?? c;
 
+// ---------- Where players act (attack zone derived from the role) ----------
+interface Slot { label: string; id: string | null }
+const posOf = (display: (string | null)[], id: string) => display.indexOf(id) + 1;
+
+function attackSlots(display: (string | null)[], roleOf: (id: string) => Player['role'] | undefined): Slot[][] {
+  // Arrays, not objects: number-like object keys would reorder to 2, 3, 4
+  const front: Slot[] = [{ label: '4', id: null }, { label: '3', id: null }, { label: '2', id: null }];
+  const back: Slot[] = [{ label: '', id: null }, { label: 'Pipe', id: null }, { label: 'D', id: null }];
+  const frontIds = [4, 3, 2].map(p => display[p - 1]).filter((id): id is string => !!id && roleOf(id) !== 'libero');
+  const backIds = [5, 6, 1].map(p => display[p - 1]).filter((id): id is string => !!id && roleOf(id) !== 'libero' && roleOf(id) !== 'setter');
+  const place = (slots: Slot[], ids: string[], pref: (id: string) => string | undefined, byPos: (id: string) => string) => {
+    const at = (label: string | undefined) => slots.find(x => x.label === label);
+    const left: string[] = [];
+    ids.forEach(id => { const sl = at(pref(id)); if (sl && !sl.id) sl.id = id; else left.push(id); });
+    left.forEach(id => { const sl = at(byPos(id)); if (sl && !sl.id) sl.id = id; else { const free = slots.find(x => !x.id); if (free) free.id = id; } });
+  };
+  place(front, frontIds, id => ({ outside: '4', middle: '3', opposite: '2', setter: '2' } as Record<string, string>)[roleOf(id) ?? ''], id => String(posOf(display, id)));
+  place(back, backIds, id => ({ outside: 'Pipe', opposite: 'D' } as Record<string, string>)[roleOf(id) ?? ''], id => ({ 5: '', 6: 'Pipe', 1: 'D' } as Record<number, string>)[posOf(display, id)]);
+  return [front, back];
+}
+
+// Receivers left to right as they stand: libero and outsides first, the rest below
+function passSlots(display: (string | null)[], roleOf: (id: string) => Player['role'] | undefined): Slot[][] {
+  const x = (id: string) => ({ 4: 0, 5: 0, 3: 1, 6: 1, 2: 2, 1: 2 } as Record<number, number>)[posOf(display, id)];
+  const back = (id: string) => [5, 6, 1].includes(posOf(display, id)) ? 0 : 1;
+  const ids = display.filter((id): id is string => !!id && roleOf(id) !== 'setter').sort((a, b) => x(a) - x(b) || back(a) - back(b));
+  const primary = ids.filter(id => roleOf(id) === 'libero' || roleOf(id) === 'outside');
+  const rest = ids.filter(id => !primary.includes(id));
+  return [primary.map(id => ({ label: '', id })), rest.map(id => ({ label: '', id }))].filter(r => r.length);
+}
+
 const STEP_TITLE: Record<RallyStep, string> = {
   our_serve: 'Our serve', opp_serve: 'Our pass', our_attack: 'Our attack', opp_attack: 'Their attack',
 };
 
-export default function RallyView({ gameState, setPending, commitRally, onSub, onUndo, onRotate, canUndo, court, onOpenLineup }: RallyViewProps) {
+export default function RallyView({ gameState, setPending, commitRally, onSub, onUndo, onRotate, canUndo, court, onOpenLineup, onFirstServe }: RallyViewProps) {
   const setNum = currentSetNumber(gameState);
   const stored = gameState.pending && gameState.pending.set === setNum ? gameState.pending : null;
   const rally: PendingRally | null = stored ?? (court.serving ? { ...freshRally(court.serving, setNum), id: `r-${setNum}-${gameState.events.length}` } : null);
 
-  const [selected, setSelected] = useState<string | null>(null);
+  // Selection belongs to one step: a new step starts clean in the same render (no leftover highlight)
+  const [pick, setPick] = useState<{ key: string; id: string | null }>({ key: '', id: null });
   const [showSubs, setShowSubs] = useState(false);
   const [quickFor, setQuickFor] = useState<string | null>(null);
 
   const serverSuggestion = rally?.step === 'our_serve' ? court.display[0] : null;
   const stepKey = rally ? `${rally.id}-${rally.step}-${rally.actions.length}-${rally.history.length}` : 'none';
-  useEffect(() => { setSelected(serverSuggestion ?? null); }, [stepKey, serverSuggestion]);
+  const selected = pick.key === stepKey ? pick.id : (serverSuggestion ?? null);
+  const setSelected = (id: string | null) => setPick({ key: stepKey, id });
 
+  const roleOf = (id: string) => gameState.players.find(p => p.id === id)?.role;
+  const shortName = (id: string) => {
+    const i = gameState.players.findIndex(p => p.id === id);
+    return i >= 0 ? (gameState.players[i].name.trim() || playerLabel(gameState.players[i], i)) : '';
+  };
   const nameOf = (id: string) => {
     const i = gameState.players.findIndex(p => p.id === id);
     return i >= 0 ? playerLabel(gameState.players[i], i) : '';
@@ -179,6 +218,9 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
     step === 'our_attack' ? p.role !== 'libero' : false;
 
   const used = subsUsed(gameState.events, setNum);
+  // Subs only between rallies
+  const rallyRunning = !!(stored && (stored.history.length > 0 || stored.actions.length > 0));
+  const legalFor = (outId: string) => legalSubsIn(gameState, setNum, outId, court.positions);
   const alerts = useMemo(() => computeAlerts(gameState, court.rotation).slice(0, 3), [gameState, court.rotation]);
   const board = useMemo(() => attackBoard(gameState, court.rotation, court.display), [gameState, court.rotation, court.display]);
   const own = rally ? rally.step !== 'opp_attack' : true;
@@ -219,7 +261,7 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
         <p className="text-[11px] text-mute font-display tracking-[0.08em] uppercase">Hold a player for error or sub</p>
         <div className="mt-auto grid grid-cols-2 gap-2">
           <button onClick={onUndo} disabled={!canUndo} className="h-11 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center justify-center gap-1.5 disabled:opacity-30"><Undo2 className="w-4 h-4" /> Undo</button>
-          <button onClick={() => setShowSubs(true)} className={`h-11 rounded-lg border font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center justify-center gap-1.5 ${used >= gameState.subLimit ? 'border-bad text-bad' : 'border-line'}`}><ArrowLeftRight className="w-4 h-4" /> Sub {used}/{gameState.subLimit}</button>
+          <button onClick={() => setShowSubs(true)} disabled={rallyRunning} className={`disabled:opacity-30 h-11 rounded-lg border font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center justify-center gap-1.5 ${used >= gameState.subLimit ? 'border-bad text-bad' : 'border-line'}`}><ArrowLeftRight className="w-4 h-4" /> Sub {used}/{gameState.subLimit}</button>
         </div>
       </section>
 
@@ -227,7 +269,14 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
       <section className={`flex flex-col p-4 lg:p-6 border-t-[3px] ${own ? 'border-t-primary' : 'border-t-secondary bg-[#1C1A24]'}`}>
         {!rally ? (
           <div className="flex-1 flex items-center justify-center">
-            <button onClick={onOpenLineup} className="h-20 px-10 rounded-xl bg-primary text-[#0D0F12] font-display font-bold tracking-[0.12em] uppercase text-xl">Set lineup for set {setNum}</button>
+            {court.hasLineup ? (
+              <div className="grid grid-cols-2 gap-3 w-full max-w-xl">
+                <button onClick={() => onFirstServe('own')} className="h-32 rounded-xl bg-primary text-[#0D0F12] font-display font-bold tracking-[0.12em] uppercase text-2xl">We serve</button>
+                <button onClick={() => onFirstServe('opponent')} className="h-32 rounded-xl bg-secondary text-[#0D0F12] font-display font-bold tracking-[0.12em] uppercase text-2xl">They serve</button>
+              </div>
+            ) : (
+              <button onClick={onOpenLineup} className="h-20 px-10 rounded-xl bg-primary text-[#0D0F12] font-display font-bold tracking-[0.12em] uppercase text-xl">Set lineup for set {setNum}</button>
+            )}
           </div>
         ) : (
           <>
@@ -239,10 +288,16 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
               {/* No exit animation: old buttons must never stay tappable after a step change */}
               <motion.div key={stepKey} initial={{ opacity: 0.4 }} animate={{ opacity: 1 }} transition={{ duration: 0.1 }}>
                   {rally.step === 'our_serve' && <Scale items={SERVE_SCALE} cols={3} disabled={!selected} onPick={rateServe} />}
-                  {rally.step === 'opp_serve' && <Scale items={PASS_SCALE} cols={3} disabled={!selected} onPick={ratePass} />}
-                  {rally.step === 'our_attack' && <Scale items={ATTACK_SCALE} cols={5} disabled={!selected} onPick={rateAttack} />}
+                  {rally.step === 'opp_serve' && <>
+                    <Picker rows={passSlots(court.display, roleOf)} selected={selected} onPick={setSelected} label={shortName} roleOf={roleOf} />
+                    <Scale items={PASS_SCALE} cols={3} compact disabled={!selected} onPick={ratePass} />
+                  </>}
+                  {rally.step === 'our_attack' && <>
+                    <Picker rows={attackSlots(court.display, roleOf)} selected={selected} onPick={setSelected} label={shortName} roleOf={roleOf} />
+                    <Scale items={ATTACK_SCALE} cols={5} compact disabled={!selected} onPick={rateAttack} />
+                  </>}
                   {rally.step === 'opp_attack' && <Scale items={OPP_ATTACK_SCALE} cols={5} disabled={false} onPick={rateOpp} />}
-                  {rally.step !== 'opp_attack' && !selected && (
+                  {rally.step === 'our_serve' && !selected && (
                     <p className="mt-3 text-center font-display text-xs font-semibold tracking-[0.12em] uppercase text-mute">Tap the player on the court</p>
                   )}
               </motion.div>
@@ -283,7 +338,8 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
             <span>PLAYER</span><span className="text-right">EFF</span><span className="text-right">ATT</span><span className="text-right">EFF</span><span className="text-right">ATT</span>
           </div>
           {board.map(r => (
-            <div key={r.playerId} data-board={r.name} className="grid grid-cols-[minmax(0,1fr)_48px_32px_48px_32px] gap-x-1.5 items-baseline py-1.5 border-t border-line">
+            <div key={r.playerId} data-board={r.name} data-oncourt={court.display.includes(r.playerId) ? '1' : '0'}
+              className={`grid grid-cols-[minmax(0,1fr)_48px_32px_48px_32px] gap-x-1.5 items-baseline py-1.5 border-t border-line ${court.display.includes(r.playerId) ? '' : 'opacity-40'}`}>
               <span className="font-display text-base font-bold uppercase truncate">{r.name} <span className="text-[11px] text-mute">{ROLE_SHORT[r.role as Player['role']]}</span></span>
               <EffCell line={r.match} />
               <span className="text-right font-display text-sm text-mute tabular-nums">{r.match.att}</span>
@@ -295,10 +351,10 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
       </aside>
 
       <AnimatePresence>
-        {showSubs && <SubSheet players={gameState.players} courtIds={court.positions} onClose={() => setShowSubs(false)} onSub={onSub} used={used} limit={gameState.subLimit} />}
+        {showSubs && <SubSheet players={gameState.players} courtIds={court.positions} legalFor={legalFor} onClose={() => setShowSubs(false)} onSub={onSub} used={used} limit={gameState.subLimit} />}
         {quickFor && (
           <QuickSheet key="quick" player={gameState.players.find(p => p.id === quickFor)!} pos={positionOf(court, quickFor)}
-            label={nameOf(quickFor)} players={gameState.players} courtIds={court.positions} canError={!!rally}
+            label={nameOf(quickFor)} players={gameState.players} legal={legalFor(quickFor)} blocked={rallyRunning} canError={!!rally}
             used={used} limit={gameState.subLimit}
             onError={() => unforcedError(quickFor)} onSub={inId => { onSub(inId, quickFor); setQuickFor(null); }} onClose={() => setQuickFor(null)} />
         )}
@@ -313,6 +369,27 @@ export function freshRally(servingTeam: TeamSide, set: number): PendingRally {
 
 // ---------- Pieces ----------
 
+// Player picker in the middle panel: one place to tap, laid out as they play
+function Picker({ rows, selected, onPick, label, roleOf }: { rows: Slot[][]; selected: string | null; onPick: (id: string) => void; label: (id: string) => string; roleOf: (id: string) => Player['role'] | undefined }) {
+  return (
+    <div className="flex flex-col gap-2 mb-4">
+      {rows.map((row, r) => (
+        <div key={r} className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.max(3, row.length)}, minmax(0, 1fr))` }}>
+          {row.map((slot, k) => slot.id ? (
+            <button key={slot.id} data-pick={label(slot.id)} onClick={() => onPick(slot.id!)}
+              className={`relative h-14 lg:h-16 rounded-lg flex flex-col items-center justify-center transition-all active:scale-95 ${
+                selected === slot.id ? 'border-2 border-primary bg-primary/10 text-primary' : r > 0 && rows.length > 1 && !slot.label ? 'border border-line text-mute' : 'border border-line'}`}>
+              {slot.label && <span className="absolute top-1 left-2 font-display text-[10px] font-bold tracking-[0.1em] text-mute uppercase">{slot.label}</span>}
+              <span className="font-display text-lg lg:text-xl font-bold uppercase leading-none truncate max-w-full px-2">{label(slot.id)}</span>
+              <span className="font-display text-[10px] font-semibold tracking-[0.1em] text-mute">{ROLE_SHORT[roleOf(slot.id) ?? 'outside']}</span>
+            </button>
+          ) : <div key={`e${k}`} className="h-14 lg:h-16" />)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Efficiency: green from 30%, red below 0. Muted until N_MIN attempts.
 function EffCell({ line }: { line: EffLine }) {
   if (line.eff === null) return <span className="text-right font-display text-base text-mute">–</span>;
@@ -322,6 +399,14 @@ function EffCell({ line }: { line: EffLine }) {
 
 export function InfoDot({ text, light }: { text: string; light?: boolean }) {
   const [open, setOpen] = useState(false);
+  // Closes on its own after 4.5 s, or on the next tap anywhere
+  useEffect(() => {
+    if (!open) return;
+    const t = window.setTimeout(() => setOpen(false), 4500);
+    const close = () => setOpen(false);
+    const id = window.setTimeout(() => document.addEventListener('pointerdown', close), 0);
+    return () => { window.clearTimeout(t); window.clearTimeout(id); document.removeEventListener('pointerdown', close); };
+  }, [open]);
   return (
     <span className="relative inline-flex">
       <span role="button" tabIndex={0} aria-label="Info"
@@ -336,7 +421,7 @@ export function InfoDot({ text, light }: { text: string; light?: boolean }) {
   );
 }
 
-function Scale<C extends RatingCode>({ items, cols, disabled, onPick }: { items: ScaleItem<C>[]; cols: 3 | 5; disabled: boolean; onPick: (c: C) => void }) {
+function Scale<C extends RatingCode>({ items, cols, disabled, onPick, compact }: { items: ScaleItem<C>[]; cols: 3 | 5; disabled: boolean; onPick: (c: C) => void; compact?: boolean }) {
   return (
     <div className={`grid gap-2 ${cols === 3 ? 'grid-cols-3' : 'grid-cols-5'}`}>
       {items.map(it => {
@@ -344,7 +429,7 @@ function Scale<C extends RatingCode>({ items, cols, disabled, onPick }: { items:
         return (
           <div key={it.code} className="relative">
             <button onClick={() => onPick(it.code)} disabled={disabled} data-code={it.code}
-              className={`w-full ${cols === 3 ? 'h-28 lg:h-32' : 'h-28 lg:h-36'} rounded-xl flex flex-col items-center justify-center gap-1.5 transition-transform active:scale-95 disabled:opacity-30 ${TONE_CLASS[it.tone]}`}>
+              className={`w-full ${compact ? (cols === 3 ? 'h-20 lg:h-24' : 'h-24 lg:h-28') : cols === 3 ? 'h-28 lg:h-32' : 'h-28 lg:h-36'} rounded-xl flex flex-col items-center justify-center gap-1.5 transition-transform active:scale-95 disabled:opacity-30 ${TONE_CLASS[it.tone]}`}>
               <span className={`font-display font-bold leading-[0.9] ${cols === 3 ? 'text-5xl' : 'text-[44px]'}`}>{it.sym}</span>
               <span className={`font-display font-bold uppercase ${cols === 3 ? 'text-[15px] tracking-[0.12em]' : 'text-[13px] tracking-[0.06em]'}`}>{it.label}</span>
             </button>
@@ -405,13 +490,14 @@ function Sheet({ children, onClose }: { children: React.ReactNode; onClose: () =
   );
 }
 
-function QuickSheet({ player, pos, label, players, courtIds, canError, used, limit, onError, onSub, onClose }: {
-  player: Player; pos: number | null; label: string; players: Player[]; courtIds: (string | null)[]; canError: boolean;
+function QuickSheet({ player, pos, label, players, legal, blocked, canError, used, limit, onError, onSub, onClose }: {
+  player: Player; pos: number | null; label: string; players: Player[]; legal: string[]; blocked: boolean; canError: boolean;
   used: number; limit: number; onError: () => void; onSub: (inId: string) => void; onClose: () => void;
 }) {
-  const bench = players.map((p, i) => ({ p, i })).filter(x => x.p.role !== 'libero' && !courtIds.includes(x.p.id));
+  // Only legal subs are offered (see legalSubsIn)
+  const bench = players.map((p, i) => ({ p, i })).filter(x => legal.includes(x.p.id));
   const sorted = [...bench.filter(x => x.p.role === player.role), ...bench.filter(x => x.p.role !== player.role)];
-  const subsOpen = player.role !== 'libero' && used < limit;
+  const subsOpen = !blocked && used < limit;
   return (
     <Sheet onClose={onClose}>
       <div className="flex justify-between items-start">
@@ -429,16 +515,17 @@ function QuickSheet({ player, pos, label, players, courtIds, canError, used, lim
       {player.role !== 'libero' && (
         <>
           <div className="flex justify-between items-center">
-            <span className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">Sub · {used}/{limit}</span>
-            <InfoDot light text="Same role first (orange)." />
+            <span className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">Sub · {used}/{limit}{blocked ? ' · after the rally' : ''}</span>
+            <InfoDot light text="Only legal subs are shown. Same role first (orange)." />
           </div>
-          {!subsOpen && <p className="text-sm text-bad">Sub limit reached.</p>}
+          {!blocked && used >= limit && <p className="text-sm text-bad">Sub limit reached.</p>}
+          {!blocked && used < limit && sorted.length === 0 && <p className="text-sm text-mute">No legal sub.</p>}
           <div className="grid grid-cols-2 gap-2">
             {sorted.map(({ p, i }) => (
               <button key={p.id} onClick={() => onSub(p.id)} disabled={!subsOpen}
                 className={`h-14 rounded-lg text-left px-3.5 flex flex-col justify-center disabled:opacity-30 ${p.role === player.role ? 'border-[1.5px] border-primary' : 'border border-line'}`}>
-                <span className="font-display text-lg font-bold uppercase leading-tight truncate">{playerLabel(p, i)}</span>
-                <span className="font-display text-[11px] font-semibold tracking-[0.1em] text-mute">{ROLE_SHORT[p.role]}</span>
+                <span className="font-display text-lg font-bold uppercase leading-tight truncate">{p.name.trim() || playerLabel(p, i)}</span>
+                <span className="font-display text-[11px] font-semibold tracking-[0.1em] text-mute">{p.number.trim() ? `#${p.number.trim()} · ` : ''}{ROLE_SHORT[p.role]}</span>
               </button>
             ))}
           </div>
@@ -448,18 +535,19 @@ function QuickSheet({ player, pos, label, players, courtIds, canError, used, lim
   );
 }
 
-function SubSheet({ players, courtIds, onClose, onSub, used, limit }: {
-  players: Player[]; courtIds: (string | null)[]; onClose: () => void; onSub: (inId: string, outId: string) => void; used: number; limit: number;
+function SubSheet({ players, courtIds, legalFor, onClose, onSub, used, limit }: {
+  players: Player[]; courtIds: (string | null)[]; legalFor: (outId: string) => string[]; onClose: () => void; onSub: (inId: string, outId: string) => void; used: number; limit: number;
 }) {
   const [outId, setOutId] = useState<string | null>(null);
   const indexed = players.map((p, i) => ({ p, i })).filter(x => x.p.role !== 'libero');
   const court = courtIds.map((id, k) => ({ id, pos: k + 1 })).filter(x => x.id).map(x => ({ ...indexed.find(y => y.p.id === x.id)!, pos: x.pos })).filter(x => x.p);
-  const bench = indexed.filter(x => !courtIds.includes(x.p.id));
+  const legal = outId ? legalFor(outId) : [];
+  const bench = indexed.filter(x => legal.includes(x.p.id));
   const outRole = players.find(p => p.id === outId)?.role;
   const btn = (p: Player, i: number, active: boolean, onClick: () => void, disabled = false, hint = false) => (
     <button key={p.id} onClick={onClick} disabled={disabled}
       className={`w-full text-left px-3 py-2.5 rounded-lg transition-all disabled:opacity-30 ${active ? 'border-[1.5px] border-primary bg-primary/10' : hint ? 'border-[1.5px] border-primary' : 'border border-line'}`}>
-      <span className="block font-display font-bold uppercase text-base truncate">{playerLabel(p, i)}</span>
+      <span className="block font-display font-bold uppercase text-base truncate">{p.name.trim() || playerLabel(p, i)}</span>
       <span className="block font-display text-[11px] font-semibold tracking-[0.1em] text-mute">{ROLE_LABEL[p.role]}</span>
     </button>
   );
@@ -468,19 +556,24 @@ function SubSheet({ players, courtIds, onClose, onSub, used, limit }: {
       <div className="flex justify-between items-center">
         <div>
           <h3 className="font-display text-2xl font-bold uppercase tracking-[0.04em]">Sub</h3>
-          <p className="font-display text-xs font-semibold tracking-[0.12em] uppercase text-mute">{outId ? 'Who comes in?' : 'Who goes out?'} · {used}/{limit}</p>
+          <p className="font-display text-xs font-semibold tracking-[0.12em] uppercase text-mute">{used}/{limit}</p>
         </div>
         <button onClick={onClose} aria-label="Close" className="w-10 h-10 rounded-lg border border-line flex items-center justify-center"><X className="w-5 h-5" /></button>
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-2">
           <div className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">Out</div>
-          {court.map(({ p, i, pos }) => <div key={p.id} className="relative">{btn(p, i, outId === p.id, () => setOutId(outId === p.id ? null : p.id))}<span className="absolute top-2 right-2 font-display text-[11px] text-mute">P{pos}</span></div>)}
+          {court.map(({ p, i, pos }) => (
+            <div key={p.id} className="relative">
+              {btn(p, i, outId === p.id, () => setOutId(outId === p.id ? null : p.id), legalFor(p.id).length === 0)}
+              <span className="absolute top-2 right-2 font-display text-[11px] text-mute">P{pos}</span>
+            </div>
+          ))}
         </div>
         <div className="space-y-2">
           <div className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">In</div>
-          {bench.length === 0 && <div className="text-sm text-mute">Bench empty</div>}
-          {bench.map(({ p, i }) => btn(p, i, false, () => { if (outId) { onSub(p.id, outId); setOutId(null); onClose(); } }, !outId || used >= limit, !!outRole && p.role === outRole))}
+          {outId && bench.length === 0 && <div className="text-sm text-mute">No legal sub</div>}
+          {bench.map(({ p, i }) => btn(p, i, false, () => { if (outId) { onSub(p.id, outId); setOutId(null); onClose(); } }, used >= limit, !!outRole && p.role === outRole))}
         </div>
       </div>
     </Sheet>

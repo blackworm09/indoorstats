@@ -116,10 +116,12 @@ export function pointLog(state: GameState): PointLog[] {
   return out;
 }
 
-// Set 1 starts empty. Later sets start from the previous set's lineup (first serve unset).
+// Set 1 starts empty. Later sets start from the previous set's lineup.
+// First serve alternates in sets 2-4 (whoever received first serves first). Set 5 is a new toss: asked again.
 export function defaultLineup(state: GameState, set: number): SetLineup {
   const prev = set > 1 ? state.lineups?.[set - 1] : undefined;
-  if (prev) return { ...prev, positions: [...prev.positions], liberoReplaces: [...prev.liberoReplaces], firstServe: null };
+  const flip = (t: TeamSide | null): TeamSide | null => (t === 'own' ? 'opponent' : t === 'opponent' ? 'own' : null);
+  if (prev) return { ...prev, positions: [...prev.positions], liberoReplaces: [...prev.liberoReplaces], firstServe: set <= 4 ? flip(prev.firstServe) : null };
   // No lineup yet: preselect the roster's liberos (two = by phase)
   const libs = state.players.filter(p => p.role === 'libero').map(p => p.id);
   return { positions: [null, null, null, null, null, null], liberoId: libs[0] ?? null, libero2Id: libs[1] ?? null, liberoReplaces: [], firstServe: null };

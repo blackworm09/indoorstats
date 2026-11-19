@@ -3,7 +3,7 @@ import { Download, RotateCcw } from 'lucide-react';
 import { GameState, ROLE_SHORT, Role, ScaleCode } from './types';
 import { currentSetNumber, formatMatchDate, scoreForSet } from './utils';
 import { EffLine, N_MIN } from './alerts';
-import { attackByPhase, attackByRotation, passRows, pointSources, ScaleRow, serveRows, setterRows } from './analysis';
+import { attackByPhase, attackByRotation, bestFirst, historyLog, passRows, pointSources, ScaleRow, serveRows, setterRows } from './analysis';
 import { InfoDot, PASS_SCALE, SERVE_SCALE, TONE_CLASS } from './RallyView';
 
 interface ReportViewProps {
@@ -42,28 +42,24 @@ function HeatCell({ line }: { line: EffLine }) {
   );
 }
 
-function Bar({ line }: { line: EffLine }) {
+// Efficiency as a number: green from 25%, red below 0, faded under N_MIN. Small number = attempts.
+function EffNum({ line }: { line: EffLine }) {
   if (!line.att) return <span className="font-display text-mute">–</span>;
   const v = line.eff!;
-  const col = v >= 0.25 ? 'bg-good' : v < 0 ? 'bg-bad' : 'bg-mute';
+  const tone = v >= 0.25 ? 'text-good' : v < 0 ? 'text-bad' : '';
   return (
-    <div className={`flex items-center gap-2 ${line.att < N_MIN ? 'opacity-55' : ''}`}>
-      <div className={`h-2.5 rounded-sm ${col}`} style={{ width: `${Math.max(4, Math.abs(v) * 100) * 0.9}px` }} />
-      <span className="font-display text-base font-bold tabular-nums">{pct(v)}</span>
-      <span className="font-display text-[11px] text-mute">{line.att}</span>
-    </div>
+    <span className={`font-display tabular-nums ${line.att < N_MIN ? 'opacity-55' : ''}`}>
+      <span className={`text-base font-bold ${tone}`}>{pct(v)}</span> <span className="text-[11px] text-mute">{line.att}</span>
+    </span>
   );
 }
 
-// Stacked bar of the 6-level scale, worst → best, in the rating colours
-function ScaleBar({ row, scale }: { row: ScaleRow; scale: typeof PASS_SCALE }) {
-  return (
-    <div className="flex h-3 rounded-sm overflow-hidden bg-card">
-      {scale.map(s => row.counts[s.code] ? (
-        <div key={s.code} title={`${s.label}: ${row.counts[s.code]}`} className={TONE_CLASS[s.tone].split(' ')[0]} style={{ width: `${(row.counts[s.code] / row.n) * 100}%` }} />
-      ) : null)}
-    </div>
-  );
+// One small count column per rating, in the rating colours (worst → best)
+function ScaleHead({ scale }: { scale: typeof PASS_SCALE }) {
+  return <>{scale.map(sc => <span key={sc.code} className={`h-5 rounded-sm flex items-center justify-center font-display text-xs font-bold ${TONE_CLASS[sc.tone]}`} title={sc.label}>{sc.sym}</span>)}</>;
+}
+function ScaleCounts({ row, scale }: { row: ScaleRow; scale: typeof PASS_SCALE }) {
+  return <>{scale.map(sc => <span key={sc.code} className={`text-center font-display text-sm tabular-nums ${row.counts[sc.code] ? '' : 'text-mute/40'}`}>{row.counts[sc.code]}</span>)}</>;
 }
 
 export default function ReportView({ gameState, onExport, onReset }: ReportViewProps) {
@@ -72,10 +68,21 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
   const setsWithData = Array.from(new Set(gameState.events.map(e => e.set))).sort((a, b) => a - b);
   const setScores = [...gameState.setHistory, ...(setsWithData.includes(setNum) ? [scoreForSet(gameState.events, setNum)] : [])];
 
-  const heat = useMemo(() => attackByRotation(gameState, setFilter), [gameState, setFilter]);
-  const phase = useMemo(() => attackByPhase(gameState, setFilter), [gameState, setFilter]);
-  const pass = useMemo(() => passRows(gameState, setFilter), [gameState, setFilter]);
-  const serve = useMemo(() => serveRows(gameState, setFilter), [gameState, setFilter]);
+  const heat = useMemo(() => { const h = attackByRotation(gameState, setFilter); return { ...h, rows: bestFirst(h.rows, r => r.all) }; }, [gameState, setFilter]);
+  const phase = useMemo(() => {
+    const rows = attackByPhase(gameState, setFilter);
+    const total = (r: typeof rows[number]): EffLine => {
+      const ls = [r.byPhase.in, r.byPhase.out, r.byPhase.transition];
+      const att = ls.reduce((a, l) => a + l.att, 0), kills = ls.reduce((a, l) => a + l.kills, 0), neg = ls.reduce((a, l) => a + l.neg, 0);
+      return { att, kills, neg, eff: att ? (kills - neg) / att : null };
+    };
+    return rows.length ? [rows[0], ...bestFirst(rows.slice(1), total)] : rows;
+  }, [gameState, setFilter]);
+  // Rate as an EffLine so the same best-first rule applies: passing by Positive %, serving by Pressure %
+  const asLine = (n: number, good: number): EffLine => ({ att: n, kills: good, neg: 0, eff: n ? good / n : null });
+  const pass = useMemo(() => { const r = passRows(gameState, setFilter); return r.length ? [r[0], ...bestFirst(r.slice(1), x => asLine(x.n, x.counts['#'] + x.counts['+']))] : r; }, [gameState, setFilter]);
+  const serve = useMemo(() => { const r = serveRows(gameState, setFilter); return r.length ? [r[0], ...bestFirst(r.slice(1), x => asLine(x.n, x.counts['#'] + x.counts['+'] + x.counts['/']))] : r; }, [gameState, setFilter]);
+  const history = useMemo(() => historyLog(gameState, setFilter), [gameState, setFilter]);
   const setters = useMemo(() => setterRows(gameState, setFilter), [gameState, setFilter]);
   const points = useMemo(() => pointSources(gameState, setFilter), [gameState, setFilter]);
 
@@ -148,7 +155,7 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
               {phase.map(r => (
                 <div key={r.id} className="contents" data-phase={r.name}>
                   <span className={`${name} ${r.id === 'team' ? 'text-primary' : ''}`}>{r.name}</span>
-                  <Bar line={r.byPhase.in} /><Bar line={r.byPhase.out} /><Bar line={r.byPhase.transition} />
+                  <EffNum line={r.byPhase.in} /><EffNum line={r.byPhase.out} /><EffNum line={r.byPhase.transition} />
                 </div>
               ))}
             </div>
@@ -156,11 +163,11 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
         </Card>
 
         {/* Passing */}
-        <Card title="Passing" info="Positive % = # and +. Perfect % = #. Error % = = (aced). Bar = all passes on the scale, worst to best.">
+        <Card title="Passing" info="Positive % = # and +. Perfect % = #. Error % = = (aced). Coloured columns = count per rating. Best Positive % first.">
           {pass.length === 0 ? <Empty /> : (
-            <div className="grid grid-cols-[90px_36px_repeat(3,56px)_minmax(80px,1fr)] gap-x-2 gap-y-2.5 items-center">
+            <div className="grid grid-cols-[84px_32px_repeat(3,48px)_repeat(6,minmax(22px,1fr))] gap-x-1.5 gap-y-2.5 items-center overflow-x-auto">
               <span /><span className={`${th} text-right`}>N</span>
-              <span className={`${th} text-right`}>Pos</span><span className={`${th} text-right`}>Perf</span><span className={`${th} text-right`}>Err</span><span />
+              <span className={`${th} text-right`}>Pos</span><span className={`${th} text-right`}>Perf</span><span className={`${th} text-right`}>Err</span><ScaleHead scale={PASS_SCALE} />
               {pass.map(r => (
                 <div key={r.id} className="contents" data-pass={r.name}>
                   <span className={`${name} ${r.id === 'team' ? 'text-primary' : ''}`}>{r.name}</span>
@@ -168,7 +175,7 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
                   <span className="text-right font-display text-base font-bold tabular-nums">{pct(share(r.counts['#'] + r.counts['+'], r.n))}</span>
                   <span className="text-right font-display text-base tabular-nums">{pct(share(r.counts['#'], r.n))}</span>
                   <span className={`text-right font-display text-base tabular-nums ${r.counts['='] ? 'text-bad' : ''}`}>{pct(share(r.counts['='], r.n))}</span>
-                  <ScaleBar row={r} scale={PASS_SCALE} />
+                  <ScaleCounts row={r} scale={PASS_SCALE} />
                 </div>
               ))}
             </div>
@@ -176,11 +183,11 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
         </Card>
 
         {/* Serving */}
-        <Card title="Serving" info="Rated by how they passed it. Pressure % = serves that put them out of system or worse for them (+, / and aces). Bar = all serves, worst to best.">
+        <Card title="Serving" info="Rated by how they passed it. Pressure % = serves that put them out of system or worse for them (+, / and aces). Coloured columns = count per rating. Best Pressure % first.">
           {serve.length === 0 ? <Empty /> : (
-            <div className="grid grid-cols-[90px_36px_repeat(3,56px)_minmax(80px,1fr)] gap-x-2 gap-y-2.5 items-center">
+            <div className="grid grid-cols-[84px_32px_repeat(3,48px)_repeat(6,minmax(22px,1fr))] gap-x-1.5 gap-y-2.5 items-center overflow-x-auto">
               <span /><span className={`${th} text-right`}>N</span>
-              <span className={`${th} text-right`}>Ace</span><span className={`${th} text-right`}>Err</span><span className={`${th} text-right`}>Press</span><span />
+              <span className={`${th} text-right`}>Ace</span><span className={`${th} text-right`}>Err</span><span className={`${th} text-right`}>Press</span><ScaleHead scale={SERVE_SCALE} />
               {serve.map(r => (
                 <div key={r.id} className="contents" data-serve={r.name}>
                   <span className={`${name} ${r.id === 'team' ? 'text-primary' : ''}`}>{r.name}</span>
@@ -188,7 +195,7 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
                   <span className="text-right font-display text-base font-bold tabular-nums">{r.counts['#']}</span>
                   <span className={`text-right font-display text-base tabular-nums ${r.counts['='] ? 'text-bad' : ''}`}>{r.counts['=']}</span>
                   <span className="text-right font-display text-base tabular-nums">{pct(share(r.counts['#'] + r.counts['+'] + r.counts['/'], r.n))}</span>
-                  <ScaleBar row={r} scale={SERVE_SCALE} />
+                  <ScaleCounts row={r} scale={SERVE_SCALE} />
                 </div>
               ))}
             </div>
@@ -220,6 +227,22 @@ export default function ReportView({ gameState, onExport, onReset }: ReportViewP
                   <span className="text-right font-display text-sm text-mute tabular-nums">{r.att}</span>
                   <span className="text-right font-display text-base font-bold tabular-nums">{r.assists}</span>
                   <span className="text-right font-display text-base tabular-nums">{pct(r.eff)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+        {/* History */}
+        <Card title="History" info="Every point in order with the score after it, plus subs and timeouts. Orange = our point, purple = theirs." className="xl:col-span-2">
+          {history.length === 0 ? <Empty /> : (
+            <div className="max-h-[440px] overflow-y-auto pr-1 flex flex-col">
+              {history.map((h, i) => (
+                <div key={i} data-history className={`flex items-center gap-3 py-1.5 border-t border-line text-sm ${h.kind !== 'point' ? 'text-mute' : ''}`}>
+                  {(i === 0 || history[i - 1].set !== h.set) && setFilter === null ? <span className="font-display text-[11px] font-bold tracking-[0.12em] text-mute w-10 shrink-0">SET {h.set}</span> : <span className="w-10 shrink-0" />}
+                  <span className="font-display text-xs text-mute w-14 shrink-0 tabular-nums">{new Date(h.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${h.winner === 'own' ? 'bg-primary' : h.winner === 'opponent' ? 'bg-secondary' : 'bg-transparent'}`} />
+                  <span className="font-display text-base font-bold tabular-nums w-14 shrink-0">{h.kind === 'point' ? `${h.own}:${h.opponent}` : ''}</span>
+                  <span className="truncate">{h.text}</span>
                 </div>
               ))}
             </div>
