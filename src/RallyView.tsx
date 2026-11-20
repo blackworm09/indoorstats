@@ -109,7 +109,8 @@ function attackSlots(display: (string | null)[], roleOf: (id: string) => Player[
 function passSlots(display: (string | null)[], roleOf: (id: string) => Player['role'] | undefined): Slot[][] {
   const x = (id: string) => ({ 4: 0, 5: 0, 3: 1, 6: 1, 2: 2, 1: 2 } as Record<number, number>)[posOf(display, id)];
   const back = (id: string) => [5, 6, 1].includes(posOf(display, id)) ? 0 : 1;
-  const ids = display.filter((id): id is string => !!id && roleOf(id) !== 'setter').sort((a, b) => x(a) - x(b) || back(a) - back(b));
+  // Everyone on court can take the first ball (short serves): setter and middles sit in the second row
+  const ids = display.filter((id): id is string => !!id).sort((a, b) => x(a) - x(b) || back(a) - back(b));
   const primary = ids.filter(id => roleOf(id) === 'libero' || roleOf(id) === 'outside');
   const rest = ids.filter(id => !primary.includes(id));
   return [primary.map(id => ({ label: '', id })), rest.map(id => ({ label: '', id }))].filter(r => r.length);
@@ -215,7 +216,7 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
 
   const isEligible = (step: RallyStep, p: Player) =>
     step === 'our_serve' ? p.role !== 'libero' :
-    step === 'opp_serve' ? p.role !== 'setter' :
+    step === 'opp_serve' ? true :
     step === 'our_attack' ? p.role !== 'libero' : false;
 
   const used = subsUsed(gameState.events, setNum);
@@ -229,7 +230,7 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
   const crumbs = rally ? [rally.servingTeam === 'own' ? t('We serve') : t('They serve'), ...trailOf(rally)] : [];
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col lg:grid lg:grid-cols-[minmax(280px,30%)_1fr_minmax(240px,24%)]">
+    <div className="flex-1 min-h-0 flex flex-col lg:grid lg:grid-cols-[270px_minmax(0,1fr)_270px] xl:grid-cols-[minmax(280px,28%)_minmax(0,1fr)_minmax(300px,25%)]">
       {/* COURT */}
       <section className="flex flex-col gap-4 p-4 lg:p-5 border-b lg:border-b-0 lg:border-r border-line">
         <div className="flex items-center justify-between">
@@ -332,7 +333,7 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
             <span className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">{t("Attack")}</span>
             <InfoDot light text={t("Eff = (kills − errors − blocked) / attempts. Att = attempts. Now = current rotation.")} />
           </div>
-          <div className="grid grid-cols-[minmax(0,1fr)_48px_32px_48px_32px] gap-x-1.5 items-baseline font-display text-[11px] font-bold tracking-[0.1em] text-mute">
+          <div className="grid grid-cols-[minmax(0,1fr)_44px_28px_44px_28px] gap-x-1.5 items-baseline font-display text-[11px] font-bold tracking-[0.1em] text-mute">
             <span />
             <span className="col-span-2 text-center">{t("MATCH")}</span>
             <span className="col-span-2 text-center text-ink">{t('NOW')} {court.rotation ? `R${court.rotation}` : ''}</span>
@@ -340,8 +341,8 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
           </div>
           {board.map(r => (
             <div key={r.playerId} data-board={r.name} data-oncourt={court.display.includes(r.playerId) ? '1' : '0'}
-              className={`grid grid-cols-[minmax(0,1fr)_48px_32px_48px_32px] gap-x-1.5 items-baseline py-1.5 border-t border-line ${court.display.includes(r.playerId) ? '' : 'opacity-40'}`}>
-              <span className="font-display text-base font-bold uppercase truncate">{r.name} <span className="text-[11px] text-mute">{t(ROLE_SHORT[r.role as Player['role']])}</span></span>
+              className={`grid grid-cols-[minmax(0,1fr)_44px_28px_44px_28px] gap-x-1.5 items-baseline py-1.5 border-t border-line ${court.display.includes(r.playerId) ? '' : 'opacity-40'}`}>
+              <span className="font-display text-sm xl:text-base font-bold uppercase truncate">{r.name} <span className="text-[11px] text-mute">{t(ROLE_SHORT[r.role as Player['role']])}</span></span>
               <EffCell line={r.match} />
               <span className="text-right font-display text-sm text-mute tabular-nums">{r.match.att}</span>
               <EffCell line={r.now} />
@@ -395,7 +396,7 @@ function Picker({ rows, selected, onPick, label, roleOf }: { rows: Slot[][]; sel
 function EffCell({ line }: { line: EffLine }) {
   if (line.eff === null) return <span className="text-right font-display text-base text-mute">–</span>;
   const tone = line.att < N_MIN ? 'text-mute' : line.eff >= 0.3 ? 'text-good' : line.eff < 0 ? 'text-bad' : 'text-ink';
-  return <span className={`text-right font-display text-base font-bold tabular-nums ${tone}`}>{line.eff < 0 ? '−' : ''}{Math.abs(Math.round(line.eff * 100))}%</span>;
+  return <span className={`text-right font-display text-sm xl:text-base font-bold tabular-nums whitespace-nowrap ${tone}`}>{line.eff < 0 ? '−' : ''}{Math.abs(Math.round(line.eff * 100))}%</span>;
 }
 
 export function InfoDot({ text, light }: { text: string; light?: boolean }) {
@@ -410,10 +411,13 @@ export function InfoDot({ text, light }: { text: string; light?: boolean }) {
   }, [open]);
   return (
     <span className="relative inline-flex">
+      {/* Small circle, but a ~28px invisible tap area around it */}
       <span role="button" tabIndex={0} aria-label="Info"
         onClick={e => { e.stopPropagation(); setOpen(o => !o); }}
         onPointerDown={e => e.stopPropagation()}
-        className={`w-[18px] h-[18px] rounded-full border flex items-center justify-center text-[11px] italic font-bold font-serif cursor-pointer ${light ? 'border-white/60 text-white/80' : 'border-black/40 text-black/60'}`}>i</span>
+        className="p-[7px] -m-[7px] cursor-pointer inline-flex">
+        <span className={`w-[14px] h-[14px] rounded-full border flex items-center justify-center text-[10px] leading-none italic font-bold font-serif ${light ? 'border-white/45 text-white/75' : 'border-black/30 text-black/55'}`}>i</span>
+      </span>
       {open && (
         <span onClick={e => { e.stopPropagation(); setOpen(false); }}
           className="absolute right-0 bottom-[calc(100%+8px)] z-20 w-52 rounded-lg bg-ink text-[#0B0C0E] px-3 py-2 text-[13px] font-bold leading-snug shadow-2xl normal-case tracking-normal text-left font-sans">{text}</span>
@@ -434,7 +438,7 @@ function Scale<C extends RatingCode>({ items, cols, disabled, onPick, compact }:
               <span className={`font-display font-bold leading-[0.9] ${cols === 3 ? 'text-5xl' : 'text-[44px]'}`}>{it.sym}</span>
               <span className={`font-display font-bold uppercase text-center leading-tight px-1 ${cols === 3 ? 'text-[15px] tracking-[0.12em]' : 'text-[12px] lg:text-[13px] tracking-[0.02em]'}`}>{t(it.label)}</span>
             </button>
-            <span className="absolute top-2 right-2"><InfoDot text={t(it.info)} light={light} /></span>
+            <span className="absolute top-1.5 right-1.5 lg:top-2 lg:right-2"><InfoDot text={t(it.info)} light={light} /></span>
           </div>
         );
       })}
@@ -470,8 +474,9 @@ function CourtSlot({ pos, player, label, selected, dimmed, onTap, onLong }: {
         selected ? 'border-[1.5px] border-primary bg-primary/10' : libero ? 'border border-dashed border-mute' : 'border border-line'
       } ${dimmed ? 'opacity-35' : ''}`}>
       <span className="font-display text-[11px] font-semibold tracking-[0.1em] text-mute">P{pos}</span>
-      <span className={`font-display text-lg lg:text-xl font-bold uppercase leading-none truncate max-w-full ${selected ? 'text-primary' : ''}`}>{label}</span>
-      {player && <span className="font-display text-[11px] font-semibold tracking-[0.1em] text-mute">{player.name.trim() && player.number.trim() ? `#${player.number.trim()} · ` : ''}{t(ROLE_SHORT[player.role])}</span>}
+      {/* Narrow court column (iPad landscape): smaller name, no jersey number */}
+      <span className={`font-display text-lg lg:text-base xl:text-xl font-bold uppercase leading-none truncate max-w-full ${selected ? 'text-primary' : ''}`}>{label}</span>
+      {player && <span className="font-display text-[11px] font-semibold tracking-[0.1em] text-mute whitespace-nowrap">{player.name.trim() && player.number.trim() ? <span className="lg:hidden xl:inline">#{player.number.trim()} · </span> : null}{t(ROLE_SHORT[player.role])}</span>}
     </button>
   );
 }
@@ -511,7 +516,7 @@ function QuickSheet({ player, pos, label, players, legal, blocked, canError, use
       <div className="relative">
         <button onClick={onError} disabled={!canError}
           className={`w-full h-16 rounded-xl font-display text-lg font-bold tracking-[0.12em] uppercase disabled:opacity-30 ${TONE_CLASS.poor}`}>{t("Unforced error")}</button>
-        <span className="absolute top-[23px] right-3.5"><InfoDot light text={t("Net touch, foot fault, double contact. +1 them. Pass and attacks so far stay recorded.")} /></span>
+        <span className="absolute top-1/2 -translate-y-1/2 right-3.5 flex"><InfoDot light text={t("Net touch, foot fault, double contact. +1 them. Pass and attacks so far stay recorded.")} /></span>
       </div>
       {player.role !== 'libero' && (
         <>

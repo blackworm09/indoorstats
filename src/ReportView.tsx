@@ -1,6 +1,6 @@
 import { t } from './i18n';
 import { useMemo, useState } from 'react';
-import { Download, RotateCcw, Trash2, TrendingDown, TrendingUp } from 'lucide-react';
+import { AlertTriangle, Download, RotateCcw, Trash2, TrendingDown, TrendingUp } from 'lucide-react';
 import { GameState, ROLE_SHORT, Role, ScaleCode } from './types';
 import { currentSetNumber, formatMatchDate, scoreForSet } from './utils';
 import { EffLine, N_MIN } from './alerts';
@@ -244,16 +244,18 @@ export default function ReportView({ gameState, onExport, onReset, past, selecto
           )}
         </Card>
         {/* History */}
-        <Card title={t("History")} info={t("Every point in order with the score after it, plus subs and timeouts. Orange = our point, purple = theirs.")}>
+        <Card title={t("History")} info={t("Every point in order with the score after it, plus subs, timeouts and alerts (with the score when they showed). Orange = our point, purple = theirs.")}>
           {history.length === 0 ? <Empty /> : (
             <div className="max-h-[640px] overflow-y-auto pr-1 flex flex-col">
               {history.map((h, i) => (
                 <div key={i} data-history className={`flex items-center gap-3 py-2 border-t border-line text-base lg:text-lg ${h.kind !== 'point' ? 'text-mute' : ''}`}>
                   {(i === 0 || history[i - 1].set !== h.set) && setFilter === null ? <span className="font-display text-xs font-bold tracking-[0.12em] text-mute w-12 shrink-0">{t('SET')} {h.set}</span> : <span className="w-12 shrink-0" />}
                   <span className="font-display text-sm text-mute w-[4.5rem] shrink-0 tabular-nums whitespace-nowrap">{new Date(h.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${h.winner === 'own' ? 'bg-primary' : h.winner === 'opponent' ? 'bg-secondary' : 'bg-transparent'}`} />
-                  <span className="font-display text-xl font-bold tabular-nums w-16 shrink-0">{h.kind === 'point' ? `${h.own}:${h.opponent}` : ''}</span>
-                  <span className="truncate">{h.text}</span>
+                  {h.kind === 'alert'
+                    ? <AlertTriangle className="w-3.5 h-3.5 -mx-[3px] text-bad/80 shrink-0" />
+                    : <span className={`w-2 h-2 rounded-full shrink-0 ${h.winner === 'own' ? 'bg-primary' : h.winner === 'opponent' ? 'bg-secondary' : 'bg-transparent'}`} />}
+                  <span className={`font-display tabular-nums w-16 shrink-0 ${h.kind === 'point' ? 'text-xl font-bold' : 'text-base'}`}>{h.kind === 'point' || h.kind === 'alert' ? `${h.own}:${h.opponent}` : ''}</span>
+                  <span className={h.kind === 'alert' ? 'text-ink/80' : 'truncate'} data-kind={h.kind}>{h.text}</span>
                 </div>
               ))}
             </div>

@@ -123,7 +123,7 @@ export function bestFirst<T>(rows: T[], line: (r: T) => EffLine): T[] {
 }
 
 // ---------- History: every point in order, plus subs and timeouts ----------
-export interface LogEntry { set: number; time: number; kind: 'point' | 'sub' | 'timeout'; winner?: 'own' | 'opponent'; own: number; opponent: number; text: string }
+export interface LogEntry { set: number; time: number; kind: 'point' | 'sub' | 'timeout' | 'alert'; winner?: 'own' | 'opponent'; own: number; opponent: number; text: string }
 
 const CODE_WORD: Record<string, string> = { '-': '−' };
 const passCtx = (c: string) => ` · ${t('pass')} ${CODE_WORD[c] ?? c}`;
@@ -160,6 +160,13 @@ export function historyLog(state: GameState, set: number | null): LogEntry[] {
     } else if (e.kind === 'timeout') {
       out.push({ set: e.set, time: e.timestamp, kind: 'timeout', own: sc.own, opponent: sc.opponent, text: e.team === 'own' ? t('Timeout us') : t('Timeout them') });
     }
+  });
+  // Alerts go in right after the last entry that happened before them
+  (state.alertLog ?? []).filter(a => set === null || a.set === set).forEach(a => {
+    const entry: LogEntry = { set: a.set, time: a.time, kind: 'alert', own: a.own, opponent: a.opponent, text: a.text };
+    let i = out.length;
+    while (i > 0 && (out[i - 1].set > a.set || (out[i - 1].set === a.set && out[i - 1].time > a.time))) i--;
+    out.splice(i, 0, entry);
   });
   return out;
 }

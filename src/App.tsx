@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { XCircle, Trophy, Plus, Trash2, Minus, Maximize } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GameState, MatchEvent, PendingRally, Player, Role, TeamSide, ROLE_LABEL, ROLE_SHORT, ROLES, SetLineup, TIMEOUTS_PER_SET } from './types';
@@ -12,6 +12,7 @@ import { courtState, defaultLineup } from './court';
 import { LineupSheet } from './Lineup';
 import { InfoDot } from './RallyView';
 import { attackByPhase, attackByRotation, historyLog, passRows, serveRows } from './analysis';
+import { computeAlerts } from './alerts';
 import { hasData, loadCurrentTeamId, loadMatches, loadTeams, newId, SavedMatch, saveCurrentTeamId, saveMatches, saveTeams, Team } from './storage';
 import { getLang, Lang, setLang, t } from './i18n';
 
@@ -149,6 +150,24 @@ export default function App() {
   const currentSetEvents = gameState.events.filter(e => e.set === setNum);
   const court = useMemo(() => courtState(gameState, setNum), [gameState, setNum]);
   const needsLineup = !court.hasLineup && !matchOver;
+
+  // Alert log: record each alert when it shows up on the live screen (top 3), with set and score
+  const shownAlerts = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const now = computeAlerts(gameState, court.rotation).slice(0, 3);
+    const ids = new Set(now.map(a => a.id));
+    if (shownAlerts.current === null) { shownAlerts.current = ids; return; } // first render / reload: don't re-log
+    const fresh = now.filter(a => !shownAlerts.current!.has(a.id));
+    shownAlerts.current = ids;
+    if (!fresh.length) return;
+    const sc = scoreForSet(gameState.events, setNum);
+    setGameState(prev => ({
+      ...prev,
+      alertLog: [...(prev.alertLog ?? []), ...fresh.map(a => ({ id: a.id, set: setNum, time: Date.now(), own: sc.own, opponent: sc.opponent, text: a.text }))],
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameState.events, court.rotation]);
+
 
   // New set without a lineup: open the lineup screen (after the roster is closed)
   useEffect(() => {
@@ -343,7 +362,7 @@ export default function App() {
     csv += `\nATTACK BY PASS (eff / attempts)\nPlayer,In system,Out of system,Transition\n`;
     attackByPhase(gameState, null).forEach(r => { const f = (l: { eff: number | null; att: number }) => (l.att ? `${p100(l.eff)} / ${l.att}` : ''); csv += `${r.name},${f(r.byPhase.in)},${f(r.byPhase.out)},${f(r.byPhase.transition)}\n`; });
     csv += `\nEVENT LOG (time = when the scout tapped)\nTime,Set,Score,Event\n`;
-    historyLog(gameState, null).forEach(h => { csv += `${new Date(h.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })},${h.set},${h.kind === 'point' ? `${h.own}:${h.opponent}` : ''},${h.text.replace(/,/g, ' ')}\n`; });
+    historyLog(gameState, null).forEach(h => { csv += `${new Date(h.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })},${h.set},${h.kind === 'point' || h.kind === 'alert' ? `${h.own}:${h.opponent}` : ''},${h.kind === 'alert' ? `${t('Alert')}: ` : ''}${h.text.replace(/,/g, ' ')}\n`; });
     const subject = encodeURIComponent(`IndoorStats Match Report - vs ${opp} - ${date}`);
     window.location.href = `mailto:?subject=${subject}&body=${encodeURIComponent(csv)}`;
   };
@@ -365,9 +384,9 @@ export default function App() {
   return (
     <div className="h-[100dvh] flex flex-col font-sans bg-background text-ink selection:bg-primary selection:text-black">
       {/* HEADER */}
-      <header className="flex items-center gap-3 sm:gap-6 px-4 sm:px-6 h-14 sm:h-16 border-b border-line bg-surface sticky top-0 z-50">
-        <span className="font-display font-bold tracking-[0.16em] text-sm sm:text-base hidden sm:inline">{t("INDOORSTATS")}</span>
-        <nav className="flex gap-4 h-full">
+      <header className="flex items-center gap-2 sm:gap-4 lg:gap-6 px-3 sm:px-6 h-14 sm:h-16 border-b border-line bg-surface sticky top-0 z-50">
+        <span className="font-display font-bold tracking-[0.16em] text-sm sm:text-base hidden lg:inline">{t("INDOORSTATS")}</span>
+        <nav className="flex gap-3 sm:gap-4 h-full">
           {([['track', 'Live'], ['report', 'Analysis']] as const).map(([v, label]) => (
             <button key={v} onClick={() => setView(v)}
               className={`h-full font-display font-bold tracking-[0.12em] uppercase text-xs sm:text-sm border-b-2 ${view === v ? 'border-primary text-ink' : 'border-transparent text-mute'}`}>{t(label)}</button>
@@ -380,7 +399,7 @@ export default function App() {
           <span className="font-display text-2xl text-mute leading-none">:</span>
           <span className="font-display text-3xl sm:text-4xl font-bold tabular-nums leading-none">{score.opponent}</span>
           <span className="font-display text-[11px] font-bold tracking-[0.14em] text-secondary hidden sm:inline">{t("THEM")}</span>
-          <span className="font-display text-[11px] font-semibold tracking-[0.12em] text-mute ml-2 hidden md:inline">{t('SET')} {matchOver ? '–' : setNum} · {gameState.sets.own}–{gameState.sets.opponent} · {t('TO {n}', { n: setLimit })}</span>
+          <span className="font-display text-[11px] font-semibold tracking-[0.12em] text-mute ml-2 hidden xl:inline whitespace-nowrap">{t('SET')} {matchOver ? '–' : setNum} · {gameState.sets.own}–{gameState.sets.opponent} · {t('TO {n}', { n: setLimit })}</span>
         </div>
         {(['own', 'opponent'] as TeamSide[]).map(team => {
           const n = timeoutsUsed(team);
@@ -395,7 +414,7 @@ export default function App() {
         <button onClick={manualEndSet} disabled={matchOver}
           className="h-9 px-3 rounded-md border border-line font-display font-bold tracking-[0.1em] uppercase text-xs whitespace-nowrap disabled:opacity-30">{t("End set")}</button>
         <button onClick={() => { try { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); } catch { /* not supported */ } }}
-          aria-label="Fullscreen" className="h-9 w-9 rounded-md border border-line hidden sm:flex items-center justify-center text-mute"><Maximize className="w-4 h-4" /></button>
+          aria-label="Fullscreen" className="h-9 w-9 rounded-md border border-line hidden lg:flex items-center justify-center text-mute"><Maximize className="w-4 h-4" /></button>
       </header>
 
       {/* MAIN */}

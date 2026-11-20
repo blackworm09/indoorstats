@@ -126,7 +126,10 @@ export interface GameState {
   lineups: Record<number, SetLineup>;
   templateLineup?: SetLineup | null; // last used lineup, prefilled for the next set/match
   teamId?: string;
+  alertLog?: AlertLogEntry[]; // every time an alert showed up on the live screen
 }
+
+export interface AlertLogEntry { id: string; set: number; time: number; own: number; opponent: number; text: string }
 
 // Buttons in quick-tap mode
 export const SKILLS_BY_ROLE: Record<Role, Skill[]> = {
