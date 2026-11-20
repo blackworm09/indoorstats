@@ -250,6 +250,16 @@ export default function App() {
     if (newWins >= SETS_TO_WIN) setTimeout(() => setView('report'), 300);
   };
 
+  // Undo a set end (e.g. the last point of the match was a mistake): the set is open again
+  const reopenLastSet = () => {
+    setGameState(prev => {
+      const last = prev.setHistory[prev.setHistory.length - 1];
+      if (!last) return prev;
+      const winner: TeamSide = last.own > last.opponent ? 'own' : 'opponent';
+      return { ...prev, setHistory: prev.setHistory.slice(0, -1), sets: { ...prev.sets, [winner]: Math.max(0, prev.sets[winner] - 1) } };
+    });
+  };
+
   const manualEndSet = () => {
     if (score.own === score.opponent) {
       setConfirmState({ message: t('Score is tied {a}:{b}. Add the last point first.', { a: score.own, b: score.opponent }), confirmLabel: 'OK', onConfirm: () => {} });
@@ -392,11 +402,18 @@ export default function App() {
       <main key={lang} className="flex-1 flex flex-col overflow-y-auto lg:overflow-hidden min-h-0">
         {view === 'track' ? (
           <div className="flex-1 flex flex-col bg-background min-h-0 w-full">
-            {matchOver && (
-              <div className="mx-4 mt-4 p-3 rounded-lg border border-primary/40 text-primary font-display font-bold tracking-[0.1em] uppercase text-sm text-center">
-                {t('Match over · {a}–{b}. Check Analysis or start a new match.', { a: gameState.sets.own, b: gameState.sets.opponent })}
+            {matchOver ? (
+              <div className="flex-1 flex flex-col items-center justify-center gap-6 p-6 text-center">
+                <span className="font-display text-sm font-bold tracking-[0.14em] uppercase text-mute">{t('Match over')}</span>
+                <span className={`font-display text-7xl font-bold tabular-nums ${gameState.sets.own > gameState.sets.opponent ? 'text-primary' : 'text-secondary'}`}>{gameState.sets.own}–{gameState.sets.opponent}</span>
+                <span className="font-display text-lg font-semibold tracking-[0.08em] text-mute">{gameState.setHistory.map(x => `${x.own}:${x.opponent}`).join('  ·  ')}</span>
+                <div className="flex flex-wrap justify-center gap-2 mt-2">
+                  <button onClick={() => setView('report')} className="h-14 px-6 rounded-lg bg-primary text-[#0D0F12] font-display font-bold uppercase tracking-[0.12em] text-lg">{t('Analysis')}</button>
+                  <button onClick={newMatch} className="h-14 px-6 rounded-lg border border-line font-display font-bold uppercase tracking-[0.12em]">{t('New match')}</button>
+                  <button onClick={reopenLastSet} className="h-14 px-6 rounded-lg border border-line text-mute font-display font-bold uppercase tracking-[0.12em]">{t('Reopen set {n}', { n: gameState.setHistory.length })}</button>
+                </div>
               </div>
-            )}
+            ) : (
             <RallyView
               gameState={gameState}
               setPending={setPending}
@@ -409,6 +426,7 @@ export default function App() {
               onOpenLineup={() => setShowLineup(true)}
               onFirstServe={team => setGameState(prev => prev.lineups?.[setNum] ? ({ ...prev, lineups: { ...prev.lineups, [setNum]: { ...prev.lineups[setNum], firstServe: team } } }) : prev)}
             />
+            )}
           </div>
         ) : (
           <div className="flex-1 bg-background overflow-y-auto">
