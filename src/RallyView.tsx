@@ -1,7 +1,7 @@
 import { t } from './i18n';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeftRight, RotateCcw, RotateCw, Undo2, X } from 'lucide-react';
+import { ArrowLeftRight, Repeat, RotateCcw, RotateCw, Undo2, X } from 'lucide-react';
 import {
   AttackCode, GameState, Grade, MatchEvent, PendingRally, Player, PointReason, RallyStep, RatingCode, ScaleCode, Skill, StatEvent, TeamSide,
   ROLE_LABEL, ROLE_SHORT, COURT_LAYOUT,
@@ -200,8 +200,13 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
     advance(rally, code === 'rec' ? 'our_attack' : 'opp_attack', [...rally.actions, ...setEv, stat(rally, selected, 'attack', code, null)], t('{who} attack {c}', { who, c: codeText(code) }));
   };
 
-  // Dig or free ball goes straight back over: no attacker, no attack counted. Their attack next.
-  const ballOver = () => { if (rally) advance(rally, 'opp_attack', rally.actions, t('Ball over')); };
+  // Freeball: a neutral team ball, no player stats. Ours → their attack next; theirs → our attack next.
+  // If it drops, the scout uses Their fault / Our fault.
+  const freeball = () => {
+    if (!rally) return;
+    if (rally.step === 'our_attack') advance(rally, 'opp_attack', rally.actions, t('Our freeball'));
+    else if (rally.step === 'opp_attack') advance(rally, 'our_attack', rally.actions, t('Their freeball'));
+  };
 
   const rateOpp = (code: AttackCode) => {
     if (!rally) return;
@@ -270,7 +275,9 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
           ))}
         </div>
         <p className="text-[11px] text-mute font-display tracking-[0.08em] uppercase">{t("Hold a player for error or sub")}</p>
-        <div className="mt-auto grid grid-cols-[3fr_2fr] gap-2">
+        <button onClick={replay} disabled={!rally} data-replay
+          className="mt-auto h-10 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-[13px] flex items-center justify-center gap-1.5 text-mute disabled:opacity-30"><Repeat className="w-4 h-4" /> {t("Replay")}</button>
+        <div className="grid grid-cols-[3fr_2fr] gap-2">
           <button onClick={onUndo} disabled={!canUndo} data-undo-rally
             className="h-12 rounded-lg border border-line font-display font-bold tracking-[0.06em] uppercase text-[13px] flex flex-col items-center justify-center leading-tight disabled:opacity-30 min-w-0 px-1.5">
             <span className="flex items-center gap-1.5 whitespace-nowrap"><Undo2 className="w-4 h-4 shrink-0" /> {t('Last rally')}</span>
@@ -313,11 +320,6 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
                   {rally.step === 'our_attack' && <>
                     <Picker rows={attackSlots(court.display, roleOf)} selected={selected} onPick={setSelected} label={shortName} roleOf={roleOf} />
                     <Scale items={ATTACK_SCALE} cols={5} compact disabled={!selected} onPick={rateAttack} />
-                    <div className="relative mt-2">
-                      <button onClick={ballOver} data-ballover
-                        className="w-full h-14 rounded-xl border-2 border-dashed border-primary font-display font-bold uppercase tracking-[0.12em] text-base active:scale-[0.98] transition-transform">/ {t('Ball over · no attack')}</button>
-                      <span className="absolute top-1 right-1 flex leading-none"><InfoDot light text={t('Dig or free ball goes straight back. No attacker, no attack counted. Their attack next.')} /></span>
-                    </div>
                   </>}
                   {rally.step === 'opp_attack' && <Scale items={OPP_ATTACK_SCALE} cols={5} disabled={false} onPick={rateOpp} />}
                   {rally.step === 'our_serve' && !selected && (
@@ -328,7 +330,13 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
             <div className="grid grid-cols-3 gap-2">
               <button onClick={theirFault} className="h-11 rounded-lg border border-line font-display font-bold tracking-[0.06em] uppercase text-sm px-1 leading-tight">{t("Their fault")}</button>
               <button onClick={ourFault} className="h-11 rounded-lg border border-line font-display font-bold tracking-[0.06em] uppercase text-sm px-1 leading-tight">{t("Our fault")}</button>
-              <button onClick={replay} className="h-11 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center justify-center gap-1.5"><RotateCcw className="w-4 h-4" /> {t("Replay")}</button>
+              {rally.step === 'our_attack' || rally.step === 'opp_attack' ? (
+                <div className="relative">
+                  <button onClick={freeball} data-freeball
+                    className={`w-full h-11 rounded-lg border-[1.5px] font-display font-bold tracking-[0.1em] uppercase text-sm ${rally.step === 'our_attack' ? 'border-primary text-primary' : 'border-secondary text-secondary'}`}>{t('Freeball')}</button>
+                  <span className="absolute top-1 right-1 flex leading-none"><InfoDot light text={rally.step === 'our_attack' ? t('We send a freeball over. Neutral, no player stats. Their attack next. If it drops: Their fault.') : t('They send a freeball over. Neutral. Our attack next. If it drops: Our fault.')} /></span>
+                </div>
+              ) : <div />}
             </div>
           </>
         )}

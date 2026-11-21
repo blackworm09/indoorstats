@@ -13,6 +13,11 @@ export function t(s: string, vars?: Record<string, string | number>): string {
 }
 
 export const DE: Record<string, string> = {
+  "Freeball": "Freeball",
+  "Our freeball": "Unser Freeball",
+  "Their freeball": "Freeball Gegner",
+  "We send a freeball over. Neutral, no player stats. Their attack next. If it drops: Their fault.": "Wir spielen einen Freeball rüber. Neutral, keine Spielerinnen-Statistik. Als Nächstes Gegner-Angriff. Fällt er auf: Fehler Gegner.",
+  "They send a freeball over. Neutral. Our attack next. If it drops: Our fault.": "Der Gegner spielt einen Freeball rüber. Neutral. Als Nächstes unser Angriff. Fällt er auf: Unser Fehler.",
   "Export (CSV)": "Export (CSV)",
   "Last rally": "Letzter Ballwechsel",
   "Ball over": "Ball rüber",
