@@ -258,7 +258,8 @@ export function impactReport(state: GameState, set: number | null): Impact {
       id, name: nameOf(state, id),
       attack: a.att >= R.playerMin ? (a.eff! >= 0.3 ? 'pos' : a.eff! < 0.1 ? 'neg' : 'neu') : null,
       pass: ps.length >= R.playerMin ? (pos / ps.length >= 0.5 ? 'pos' : pos / ps.length < 0.3 ? 'neg' : 'neu') : null,
-      serve: sv.length >= R.playerMin ? (svErr / sv.length > R.serveErrRate ? 'neg' : svPress / sv.length >= R.servePressureGood ? 'pos' : 'neu') : null,
+      // Serve errors only count against her when she also makes more errors than aces: risk that pays off is fine
+      serve: sv.length >= R.playerMin ? (svErr / sv.length > R.serveErrRate && svErr > svAce ? 'neg' : svPress / sv.length >= R.servePressureGood && svErr <= svAce ? 'pos' : 'neu') : null,
       net: a.kills + svAce - a.neg - svErr - aced - ue,
     };
   }).sort((x, y) => y.net - x.net);
@@ -307,7 +308,7 @@ export function impactReport(state: GameState, set: number | null): Impact {
       if (pp >= R.passGood && recErr / nSets <= R.passErrPerSetMax) f.push({ tone: 'good', key: 'pass', severity: 42, title: t('Stable reception'), text: t('Positive passes {a}, {n} reception errors.', { a: pc(pp), n: recErr }) });
     }
   }
-  if (serves.length >= R.serveMin && serveErr / serves.length > R.serveErrRate) f.push({ tone: 'bad', key: 'serve', severity: 65 + serveErr, title: t('Too many serve errors'), text: t('{n} serve errors in {m} serves ({r}), {a} aces.', { n: serveErr, m: serves.length, r: pc(serveErr / serves.length), a: aces }), idea: t('Lower serve risk when the score is close.') });
+  if (serves.length >= R.serveMin && serveErr / serves.length > R.serveErrRate && serveErr > aces) f.push({ tone: 'bad', key: 'serve', severity: 65 + serveErr, title: t('Too many serve errors'), text: t('{n} serve errors in {m} serves ({r}), {a} aces.', { n: serveErr, m: serves.length, r: pc(serveErr / serves.length), a: aces }), idea: t('Lower serve risk when the score is close.') });
   else if (serves.length >= R.serveMin && pressure / serves.length >= R.servePressureGood) f.push({ tone: 'good', key: 'serve', severity: 41, title: t('Serve pressure'), text: t('{a} of serves put them out of system.', { a: pc(pressure / serves.length) }) });
   if (oppKills / nSets >= R.oppKillsPerSet) f.push({ tone: 'bad', key: 'opp', severity: 60 + oppKills / nSets, title: t('Their attack dominated'), text: t('{n} points from their attack, {b} blocks for us.', { n: oppKills, b: blocks }), idea: t('Review block and defence against their attack.') });
   if (unforced / nSets >= R.unforcedPerSet) f.push({ tone: 'bad', key: 'ue', severity: 55 + unforced, title: t('Unforced errors'), text: t('{n} points given away by our own faults.', { n: unforced }), idea: t('Cut net and line faults.') });
@@ -320,4 +321,22 @@ export function impactReport(state: GameState, set: number | null): Impact {
   while (pick.length < 3 && rest.length) pick.push(rest.shift()!);
 
   return { result, own, opponent, figures, factors: pick, players };
+}
+
+// ---------- Attack per player: how the attacks ended, per set and match ----------
+export interface AttackRow { id: string; name: string; counts: Record<'err' | 'blk' | 'play' | 'rec' | 'kill', number>; line: EffLine; bySet: { set: number; line: EffLine }[] }
+
+export function attackBreakdown(state: GameState, set: number | null): AttackRow[] {
+  const all = stats(state).filter(e => e.skill === 'attack');
+  const scope = set === null ? all : all.filter(e => e.set === set);
+  const sets = Array.from(new Set(stats(state).map(e => e.set))).sort((a, b) => a - b);
+  const code = (e: StatEvent) => (e.code as 'err' | 'blk' | 'play' | 'rec' | 'kill') ?? (e.grade === 'plus' ? 'kill' : e.grade === 'minus' ? 'err' : 'play');
+  const build = (id: string, name: string, list: StatEvent[], full: StatEvent[]): AttackRow => {
+    const counts = { err: 0, blk: 0, play: 0, rec: 0, kill: 0 };
+    list.forEach(e => { counts[code(e)]++; });
+    return { id, name, counts, line: effOf(list), bySet: sets.map(s => ({ set: s, line: effOf(full.filter(e => e.set === s)) })) };
+  };
+  const ids = Array.from(new Set(scope.map(e => e.playerId)));
+  const rows = bestFirst(ids.map(id => build(id, nameOf(state, id), scope.filter(e => e.playerId === id), all.filter(e => e.playerId === id))), r => r.line);
+  return scope.length ? [build('team', t('Team'), scope, all), ...rows] : [];
 }

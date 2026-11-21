@@ -111,8 +111,10 @@ export function LineupSheet({ players, setNum, initial, onSave, onClose }: Lineu
   };
 
   const slotRole = slot !== null ? roleFor(players, lineup.positions, slot) : null;
-  const suggested = slotRole ? courtPlayers.filter(p => p.role === slotRole) : [];
-  const others = courtPlayers.filter(p => !suggested.includes(p));
+  // Sorted by jersey number (players without a number last)
+  const byNumber = (a: Player, b: Player) => (parseInt(a.number, 10) || 999) - (parseInt(b.number, 10) || 999);
+  const suggested = slotRole ? courtPlayers.filter(p => p.role === slotRole).sort(byNumber) : [];
+  const others = courtPlayers.filter(p => !suggested.includes(p)).sort(byNumber);
 
   const pickBtn = (p: Player, primary: boolean) => {
     const i = players.findIndex(pp => pp.id === p.id);

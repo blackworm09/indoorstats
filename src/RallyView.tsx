@@ -8,14 +8,17 @@ import {
 } from './types';
 import { currentSetNumber, legalSubsIn, playerLabel, setterFor, subsUsed } from './utils';
 import { attackBoard, computeAlerts, EffLine, N_MIN } from './alerts';
+import { historyLog } from './analysis';
 import { CourtState, positionOf } from './court';
 
 interface RallyViewProps {
   gameState: GameState;
   setPending: (p: PendingRally | null) => void;
-  commitRally: (events: MatchEvent[], message: string) => void;
+  commitRally: (events: MatchEvent[], message: string, snapshot?: PendingRally) => void;
   onSub: (inId: string, outId: string) => void;
-  onUndo: () => void;
+  onUndo: () => void;      // last rally (or last sub/timeout)
+  onBack: () => void;      // last action
+  canBack: boolean;
   onRotate: (delta: number) => void;
   canUndo: boolean;
   court: CourtState;
@@ -120,7 +123,7 @@ const STEP_TITLE: Record<RallyStep, string> = {
   our_serve: 'Our serve', opp_serve: 'Our pass', our_attack: 'Our attack', opp_attack: 'Their attack',
 };
 
-export default function RallyView({ gameState, setPending, commitRally, onSub, onUndo, onRotate, canUndo, court, onOpenLineup, onFirstServe }: RallyViewProps) {
+export default function RallyView({ gameState, setPending, commitRally, onSub, onUndo, onBack, canBack, onRotate, canUndo, court, onOpenLineup, onFirstServe }: RallyViewProps) {
   const setNum = currentSetNumber(gameState);
   const stored = gameState.pending && gameState.pending.set === setNum ? gameState.pending : null;
   const rally: PendingRally | null = stored ?? (court.serving ? { ...freshRally(court.serving, setNum), id: `r-${setNum}-${gameState.events.length}` } : null);
@@ -145,6 +148,8 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
     return i >= 0 ? playerLabel(gameState.players[i], i) : '';
   };
 
+  // Commit and remember the state before the final tap, so Back can reopen the rally
+  const commitFrom = (events: MatchEvent[], msg: string) => commitRally(events, msg, rally ?? undefined);
   const trailOf = (r: PendingRally) => r.trail ?? [];
   const advance = (r: PendingRally, step: RallyStep, actions: StatEvent[], crumb: string) => {
     setPending({
@@ -161,14 +166,14 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
 
   const endWithPoint = (r: PendingRally, team: TeamSide, reason: PointReason, extra: StatEvent[] = [], msg = '', playerId?: string) => {
     const pointEvent: MatchEvent = { kind: 'point', id: uid('e'), rallyId: r.id, set: setNum, team, reason, timestamp: Date.now(), ...(playerId ? { playerId } : {}) };
-    commitRally([...r.actions, ...extra, pointEvent], msg || (team === 'own' ? '+1 us' : '+1 them'));
+    commitRally([...r.actions, ...extra, pointEvent], msg || (team === 'own' ? '+1 us' : '+1 them'), r);
   };
 
   const rateServe = (code: ScaleCode) => {
     if (!rally || !selected) return;
     const who = nameOf(selected);
-    if (code === '#') return commitRally([...rally.actions, stat(rally, selected, 'serve', code, 'own')], `${who} ace · +1 us`);
-    if (code === '=') return commitRally([...rally.actions, stat(rally, selected, 'serve', code, 'opponent')], `${who} serve error · +1 them`);
+    if (code === '#') return commitFrom([...rally.actions, stat(rally, selected, 'serve', code, 'own')], `${who} ace · +1 us`);
+    if (code === '=') return commitFrom([...rally.actions, stat(rally, selected, 'serve', code, 'opponent')], `${who} serve error · +1 them`);
     // Overpass = free ball: our attack next. Everything else: they attack.
     advance(rally, code === '/' ? 'our_attack' : 'opp_attack', [...rally.actions, stat(rally, selected, 'serve', code, null)], t('{who} serve {c}', { who, c: codeText(code) }));
   };
@@ -189,11 +194,14 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
     const setEv = setterId ? [stat(rally, setterId, 'set', code, null)] : [];
     if (code === 'kill') {
       const assist = setterId ? ` · assist ${nameOf(setterId)}` : '';
-      return commitRally([...rally.actions, ...setEv, stat(rally, selected, 'attack', code, 'own')], `${who} kill${assist} · +1 us`);
+      return commitFrom([...rally.actions, ...setEv, stat(rally, selected, 'attack', code, 'own')], `${who} kill${assist} · +1 us`);
     }
-    if (code === 'err' || code === 'blk') return commitRally([...rally.actions, ...setEv, stat(rally, selected, 'attack', code, 'opponent')], `${who} ${codeText(code)} · +1 them`);
+    if (code === 'err' || code === 'blk') return commitFrom([...rally.actions, ...setEv, stat(rally, selected, 'attack', code, 'opponent')], `${who} ${codeText(code)} · +1 them`);
     advance(rally, code === 'rec' ? 'our_attack' : 'opp_attack', [...rally.actions, ...setEv, stat(rally, selected, 'attack', code, null)], t('{who} attack {c}', { who, c: codeText(code) }));
   };
+
+  // Dig or free ball goes straight back over: no attacker, no attack counted. Their attack next.
+  const ballOver = () => { if (rally) advance(rally, 'opp_attack', rally.actions, t('Ball over')); };
 
   const rateOpp = (code: AttackCode) => {
     if (!rally) return;
@@ -220,10 +228,11 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
     step === 'our_attack' ? p.role !== 'libero' : false;
 
   const used = subsUsed(gameState.events, setNum);
+  const lastEntry = useMemo(() => historyLog(gameState, setNum).filter(h => h.kind !== 'alert').pop(), [gameState, setNum]);
   // Subs only between rallies
   const rallyRunning = !!(stored && (stored.history.length > 0 || stored.actions.length > 0));
   const legalFor = (outId: string) => legalSubsIn(gameState, setNum, outId, court.positions);
-  const alerts = useMemo(() => computeAlerts(gameState, court.rotation).slice(0, 3), [gameState, court.rotation]);
+  const alerts = useMemo(() => computeAlerts(gameState, court.rotation, court.display).slice(0, 3), [gameState, court.rotation, court.display]);
   const board = useMemo(() => attackBoard(gameState, court.rotation, court.display), [gameState, court.rotation, court.display]);
   const own = rally ? rally.step !== 'opp_attack' : true;
 
@@ -261,9 +270,13 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
           ))}
         </div>
         <p className="text-[11px] text-mute font-display tracking-[0.08em] uppercase">{t("Hold a player for error or sub")}</p>
-        <div className="mt-auto grid grid-cols-2 gap-2">
-          <button onClick={onUndo} disabled={!canUndo} className="h-11 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center justify-center gap-1.5 disabled:opacity-30"><Undo2 className="w-4 h-4" /> {t("Undo")}</button>
-          <button onClick={() => setShowSubs(true)} disabled={rallyRunning} className={`disabled:opacity-30 h-11 rounded-lg border font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center justify-center gap-1.5 ${used >= gameState.subLimit ? 'border-bad text-bad' : 'border-line'}`}><ArrowLeftRight className="w-4 h-4" /> {t('Sub')} {used}/{gameState.subLimit}</button>
+        <div className="mt-auto grid grid-cols-[3fr_2fr] gap-2">
+          <button onClick={onUndo} disabled={!canUndo} data-undo-rally
+            className="h-12 rounded-lg border border-line font-display font-bold tracking-[0.06em] uppercase text-[13px] flex flex-col items-center justify-center leading-tight disabled:opacity-30 min-w-0 px-1.5">
+            <span className="flex items-center gap-1.5 whitespace-nowrap"><Undo2 className="w-4 h-4 shrink-0" /> {t('Last rally')}</span>
+            {lastEntry && <span className="text-[10px] font-semibold tracking-[0.04em] text-mute truncate max-w-full normal-case">{lastEntry.kind === 'point' ? `${lastEntry.own}:${lastEntry.opponent} · ` : ''}{lastEntry.text}</span>}
+          </button>
+          <button onClick={() => setShowSubs(true)} disabled={rallyRunning} className={`disabled:opacity-30 h-12 rounded-lg border font-display font-bold tracking-[0.06em] uppercase text-[13px] flex items-center justify-center gap-1 whitespace-nowrap px-1 ${used >= gameState.subLimit ? 'border-bad text-bad' : 'border-line'}`}><ArrowLeftRight className="w-4 h-4 shrink-0 hidden xl:block" /> {t('Sub')} {used}/{gameState.subLimit}</button>
         </div>
       </section>
 
@@ -283,7 +296,10 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
         ) : (
           <>
             <h2 className={`font-display text-3xl font-bold tracking-[0.06em] uppercase ${own ? 'text-primary' : 'text-secondary'}`}>{t(STEP_TITLE[rally.step])}</h2>
-            <div className="flex flex-wrap gap-x-2 gap-y-1 mt-1 font-display text-sm font-semibold tracking-[0.1em] uppercase text-mute">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1 font-display text-sm font-semibold tracking-[0.1em] uppercase text-mute">
+              {/* Back = last action. Right after a point it reopens that rally at its final rating */}
+              <button onClick={onBack} disabled={!canBack} data-back
+                className="h-8 px-3 mr-1 rounded-md border-[1.5px] border-primary text-primary font-display font-bold text-xs tracking-[0.1em] uppercase disabled:opacity-25 disabled:border-line disabled:text-mute">← {t('Back')}</button>
               {crumbs.map((c, i) => <span key={i}>{i > 0 && <span className="mr-2 opacity-50">/</span>}{c}</span>)}
             </div>
             <div className="flex-1 flex flex-col justify-center py-6">
@@ -297,6 +313,11 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
                   {rally.step === 'our_attack' && <>
                     <Picker rows={attackSlots(court.display, roleOf)} selected={selected} onPick={setSelected} label={shortName} roleOf={roleOf} />
                     <Scale items={ATTACK_SCALE} cols={5} compact disabled={!selected} onPick={rateAttack} />
+                    <div className="relative mt-2">
+                      <button onClick={ballOver} data-ballover
+                        className="w-full h-14 rounded-xl border-2 border-dashed border-primary font-display font-bold uppercase tracking-[0.12em] text-base active:scale-[0.98] transition-transform">/ {t('Ball over · no attack')}</button>
+                      <span className="absolute top-1 right-1 flex leading-none"><InfoDot light text={t('Dig or free ball goes straight back. No attacker, no attack counted. Their attack next.')} /></span>
+                    </div>
                   </>}
                   {rally.step === 'opp_attack' && <Scale items={OPP_ATTACK_SCALE} cols={5} disabled={false} onPick={rateOpp} />}
                   {rally.step === 'our_serve' && !selected && (
@@ -410,12 +431,12 @@ export function InfoDot({ text, light }: { text: string; light?: boolean }) {
     return () => { window.clearTimeout(timer); window.clearTimeout(id); document.removeEventListener('pointerdown', close); };
   }, [open]);
   return (
-    <span className="relative inline-flex">
-      {/* Small circle, but a ~28px invisible tap area around it */}
+    <span className="relative inline-flex leading-none">
+      {/* Small circle with a ~24px tap area, kept in the corner so it is not hit by accident */}
       <span role="button" tabIndex={0} aria-label="Info"
         onClick={e => { e.stopPropagation(); setOpen(o => !o); }}
         onPointerDown={e => e.stopPropagation()}
-        className="p-[7px] -m-[7px] cursor-pointer inline-flex">
+        className="p-[5px] -m-[5px] cursor-pointer inline-flex">
         <span className={`w-[14px] h-[14px] rounded-full border flex items-center justify-center text-[10px] leading-none italic font-bold font-serif ${light ? 'border-white/45 text-white/75' : 'border-black/30 text-black/55'}`}>i</span>
       </span>
       {open && (
@@ -438,7 +459,7 @@ function Scale<C extends RatingCode>({ items, cols, disabled, onPick, compact }:
               <span className={`font-display font-bold leading-[0.9] ${cols === 3 ? 'text-5xl' : 'text-[44px]'}`}>{it.sym}</span>
               <span className={`font-display font-bold uppercase text-center leading-tight px-1 ${cols === 3 ? 'text-[15px] tracking-[0.12em]' : 'text-[12px] lg:text-[13px] tracking-[0.02em]'}`}>{t(it.label)}</span>
             </button>
-            <span className="absolute top-1.5 right-1.5 lg:top-2 lg:right-2"><InfoDot text={t(it.info)} light={light} /></span>
+            <span className="absolute top-1 right-1 flex leading-none"><InfoDot text={t(it.info)} light={light} /></span>
           </div>
         );
       })}
@@ -518,6 +539,24 @@ function QuickSheet({ player, pos, label, players, legal, blocked, canError, use
           className={`w-full h-16 rounded-xl font-display text-lg font-bold tracking-[0.12em] uppercase disabled:opacity-30 ${TONE_CLASS.poor}`}>{t("Unforced error")}</button>
         <span className="absolute top-1/2 -translate-y-1/2 right-3.5 flex"><InfoDot light text={t("Net touch, foot fault, double contact. +1 them. Pass and attacks so far stay recorded.")} /></span>
       </div>
+      {player.role === 'libero' && (
+        <>
+          <div className="flex justify-between items-center">
+            <span className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">{t('Libero swap')}{blocked ? ` · ${t('after the rally')}` : ''}</span>
+            <InfoDot light text={t("Doesn't count as a sub.")} />
+          </div>
+          {players.filter(p => p.role === 'libero' && p.id !== player.id).length === 0 && <p className="text-sm text-mute">{t('No other libero in roster.')}</p>}
+          <div className="grid grid-cols-2 gap-2">
+            {players.map((p, i) => ({ p, i })).filter(x => x.p.role === 'libero' && x.p.id !== player.id).map(({ p, i }) => (
+              <button key={p.id} onClick={() => onSub(p.id)} disabled={blocked}
+                className="h-14 rounded-lg text-left px-3.5 flex flex-col justify-center disabled:opacity-30 border-[1.5px] border-primary">
+                <span className="font-display text-lg font-bold uppercase leading-tight truncate">{p.name.trim() || playerLabel(p, i)}</span>
+                <span className="font-display text-[11px] font-semibold tracking-[0.1em] text-mute">{p.number.trim() ? `#${p.number.trim()} · ` : ''}{t(ROLE_SHORT[p.role])}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
       {player.role !== 'libero' && (
         <>
           <div className="flex justify-between items-center">

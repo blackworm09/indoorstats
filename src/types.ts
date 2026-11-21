@@ -127,6 +127,7 @@ export interface GameState {
   templateLineup?: SetLineup | null; // last used lineup, prefilled for the next set/match
   teamId?: string;
   alertLog?: AlertLogEntry[]; // every time an alert showed up on the live screen
+  lastRally?: { set: number; rallyId: string; pending: PendingRally } | null; // state before the final tap of the last rally (Back reopens it)
 }
 
 export interface AlertLogEntry { id: string; set: number; time: number; own: number; opponent: number; text: string }

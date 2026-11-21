@@ -13,9 +13,20 @@ export function t(s: string, vars?: Record<string, string | number>): string {
 }
 
 export const DE: Record<string, string> = {
+  "Export (CSV)": "Export (CSV)",
+  "Last rally": "Letzter Ballwechsel",
+  "Ball over": "Ball rüber",
+  "Ball over · no attack": "Ball rüber · kein Angriff",
+  "Dig or free ball goes straight back. No attacker, no attack counted. Their attack next.": "Abwehr oder Freeball geht direkt zurück. Keine Angreiferin, kein Angriff gezählt. Als Nächstes Gegner-Angriff.",
+  "Attack · Players": "Angriff · Spielerinnen",
+  "Att": "Anz",
+  "Every attack and how it ended, in the colours of the rating buttons. Eff = (kills − errors − blocked) / attempts. In match view: attempts and Eff per set.": "Jeder Angriff und wie er endete, in den Farben der Bewertungsbuttons. Eff = (Punkte − Fehler − geblockt) / Versuche. In der Spielansicht: Versuche und Eff pro Satz.",
+  "Libero swap": "Libero-Wechsel",
+  "Doesn't count as a sub.": "Zählt nicht als Wechsel.",
+  "No other libero in roster.": "Kein weiterer Libero im Kader.",
   "Alert": "Hinweis",
   "Every point in order with the score after it, plus subs, timeouts and alerts (with the score when they showed). Orange = our point, purple = theirs.": "Jeder Punkt der Reihe nach mit Spielstand, dazu Wechsel, Auszeiten und Hinweise (mit dem Spielstand beim Erscheinen). Orange = unser Punkt, lila = Gegner.",
-  "What decided it. Benchmarks checked against the FIVB VNL 2025 report: attack eff below 15% is a problem, from 30% a strength. Positive passes below 35% is a problem, 50%+ with max 1 reception error per set a strength. Serve errors above 10% of serves is a problem. Also: 12+ their attack points or 3+ unforced errors per set, crunch time won or lost 60%+. Player: Pos/Neg from 3 actions. Net = points won minus points given away.": "Was entschieden hat. Richtwerte abgeglichen mit dem FIVB-VNL-Bericht 2025: Angriffseffizienz unter 15% ist ein Problem, ab 30% eine Stärke. Positive Annahmen unter 35% ist ein Problem, ab 50% mit max. 1 Annahmefehler pro Satz eine Stärke. Aufschlagfehler über 10% der Aufschläge ist ein Problem. Außerdem: 12+ gegnerische Angriffspunkte oder 3+ Eigenfehler pro Satz, Crunch Time zu 60%+ gewonnen oder verloren. Spielerin: Pos/Neg ab 3 Aktionen. Bilanz = gewonnene minus abgegebene Punkte.",
+  "What decided it. Benchmarks checked against the FIVB VNL 2025 report: attack eff below 15% is a problem, from 30% a strength. Positive passes below 35% is a problem, 50%+ with max 1 reception error per set a strength. Serve errors above 10% of serves is a problem when there are more errors than aces. Also: 12+ their attack points or 3+ unforced errors per set, crunch time won or lost 60%+. Player: Pos/Neg from 3 actions. Net = points won minus points given away.": "Was entschieden hat. Richtwerte abgeglichen mit dem FIVB-VNL-Bericht 2025: Angriffseffizienz unter 15% ist ein Problem, ab 30% eine Stärke. Positive Annahmen unter 35% ist ein Problem, ab 50% mit max. 1 Annahmefehler pro Satz eine Stärke. Aufschlagfehler über 10% der Aufschläge ist ein Problem, wenn es mehr Fehler als Asse sind. Außerdem: 12+ gegnerische Angriffspunkte oder 3+ Eigenfehler pro Satz, Crunch Time zu 60%+ gewonnen oder verloren. Spielerin: Pos/Neg ab 3 Aktionen. Bilanz = gewonnene minus abgegebene Punkte.",
   "Positive passes {a}, {n} reception errors.": "Positive Annahmen {a}, {n} Annahmefehler.",
   "{n} serve errors in {m} serves ({r}), {a} aces.": "{n} Aufschlagfehler bei {m} Aufschlägen ({r}), {a} Asse.",
   "Adjust reception around {who}.": "Annahme um {who} herum anpassen.",

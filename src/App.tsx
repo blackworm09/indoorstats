@@ -154,7 +154,8 @@ export default function App() {
   // Alert log: record each alert when it shows up on the live screen (top 3), with set and score
   const shownAlerts = useRef<Set<string> | null>(null);
   useEffect(() => {
-    const now = computeAlerts(gameState, court.rotation).slice(0, 3);
+    // No logging once the match is over
+    const now = matchOver ? [] : computeAlerts(gameState, court.rotation, court.display).slice(0, 3);
     const ids = new Set(now.map(a => a.id));
     if (shownAlerts.current === null) { shownAlerts.current = ids; return; } // first render / reload: don't re-log
     const fresh = now.filter(a => !shownAlerts.current!.has(a.id));
@@ -218,6 +219,30 @@ export default function App() {
     flash(`${playerLabel(inP)} in · ${playerLabel(outP)} out`);
   };
 
+  // Back = last action: one step back in the rally; right after a point it reopens that rally at its final rating
+  const handleBack = () => {
+    setGameState(prev => {
+      const s = currentSetNumber(prev);
+      const p = prev.pending && prev.pending.set === s ? prev.pending : null;
+      if (p && p.history.length > 0) {
+        const h = p.history[p.history.length - 1];
+        return { ...prev, pending: { ...p, step: h.step, actions: p.actions.slice(0, h.actionCount), trail: (p.trail ?? []).slice(0, h.trailCount ?? 0), history: p.history.slice(0, -1) } };
+      }
+      const lr = prev.lastRally;
+      if (!lr || lr.set !== s) return prev;
+      const inSet = prev.events.filter(e => e.set === s);
+      if (inSet[inSet.length - 1]?.rallyId !== lr.rallyId) return prev; // something happened since (sub, timeout)
+      return { ...prev, events: prev.events.filter(e => e.rallyId !== lr.rallyId), pending: lr.pending, lastRally: null };
+    });
+  };
+  const canBack = (() => {
+    const p = gameState.pending && gameState.pending.set === setNum ? gameState.pending : null;
+    if (p && p.history.length > 0) return true;
+    const lr = gameState.lastRally;
+    return !!lr && lr.set === setNum && currentSetEvents[currentSetEvents.length - 1]?.rallyId === lr.rallyId;
+  })();
+
+  // Last rally: the whole last point (or the last sub/timeout) comes off; a rally in progress is dropped too
   const handleUndo = () => {
     setGameState(prev => {
       const s = currentSetNumber(prev);
@@ -225,33 +250,27 @@ export default function App() {
       for (let i = prev.events.length - 1; i >= 0; i--) {
         if (prev.events[i].set === s) { lastIdx = i; break; }
       }
-      const lastEv = lastIdx >= 0 ? prev.events[lastIdx] : null;
-      const sideEvent = !!lastEv && (lastEv.kind === 'sub' || lastEv.kind === 'rotate' || lastEv.kind === 'timeout');
-      // Step back inside the rally in progress, unless a timeout/sub/rotation happened after its last step
-      const p = prev.pending && prev.pending.set === s ? prev.pending : null;
-      if (p && p.history.length > 0 && !(sideEvent && lastEv!.timestamp > (p.lastAt ?? 0))) {
-        const h = p.history[p.history.length - 1];
-        return { ...prev, pending: { ...p, step: h.step, actions: p.actions.slice(0, h.actionCount), trail: (p.trail ?? []).slice(0, h.trailCount ?? 0), history: p.history.slice(0, -1) } };
-      }
       if (lastIdx < 0) {
-        if (p) return { ...prev, pending: null };
+        if (prev.pending) return { ...prev, pending: null };
         // Nothing played yet: undo the first-serve choice so it can be picked again
         const lu = prev.lineups?.[s];
         return lu?.firstServe ? { ...prev, lineups: { ...prev.lineups, [s]: { ...lu, firstServe: null } } } : prev;
       }
       const last = prev.events[lastIdx];
-      // A whole rally comes off together
       const events = last.rallyId
         ? prev.events.filter(e => e.rallyId !== last.rallyId)
         : prev.events.filter((_, i) => i !== lastIdx);
-      const keepPending = last.kind === 'sub' || last.kind === 'rotate' || last.kind === 'timeout';
-      return { ...prev, events, pending: keepPending ? prev.pending : null };
+      // A timeout/sub comes off alone; the rally in progress stays
+      const side = last.kind === 'sub' || last.kind === 'rotate' || last.kind === 'timeout';
+      return { ...prev, events, pending: side ? prev.pending : null, lastRally: side ? prev.lastRally : null };
     });
     flash('Undone');
   };
 
-  const commitRally = (events: MatchEvent[], message: string) => {
-    setGameState(prev => ({ ...prev, events: [...prev.events, ...events], pending: null }));
+  const commitRally = (events: MatchEvent[], message: string, snapshot?: PendingRally) => {
+    const rallyId = events.find(e => e.rallyId)?.rallyId;
+    setGameState(prev => ({ ...prev, events: [...prev.events, ...events], pending: null,
+      lastRally: snapshot && rallyId ? { set: currentSetNumber(prev), rallyId, pending: snapshot } : null }));
     flash(message);
   };
 
@@ -363,8 +382,19 @@ export default function App() {
     attackByPhase(gameState, null).forEach(r => { const f = (l: { eff: number | null; att: number }) => (l.att ? `${p100(l.eff)} / ${l.att}` : ''); csv += `${r.name},${f(r.byPhase.in)},${f(r.byPhase.out)},${f(r.byPhase.transition)}\n`; });
     csv += `\nEVENT LOG (time = when the scout tapped)\nTime,Set,Score,Event\n`;
     historyLog(gameState, null).forEach(h => { csv += `${new Date(h.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })},${h.set},${h.kind === 'point' || h.kind === 'alert' ? `${h.own}:${h.opponent}` : ''},${h.kind === 'alert' ? `${t('Alert')}: ` : ''}${h.text.replace(/,/g, ' ')}\n`; });
-    const subject = encodeURIComponent(`IndoorStats Match Report - vs ${opp} - ${date}`);
-    window.location.href = `mailto:?subject=${subject}&body=${encodeURIComponent(csv)}`;
+    // Share sheet with a CSV file (Mail, AirDrop, Files, WhatsApp...). Fallback: download. No mailto: it opens whatever the default mail app is and cuts long bodies
+    const safe = (x: string) => x.replace(/[^\p{L}\p{N}]+/gu, '_').replace(/^_|_$/g, '');
+    const fileName = `IndoorStats_${(gameState.matchDate || new Date().toISOString()).slice(0, 10)}_${safe(opp)}.csv`;
+    const file = new File(['\ufeff' + csv], fileName, { type: 'text/csv' });
+    const nav = navigator as Navigator & { canShare?: (d: ShareData) => boolean };
+    if (nav.canShare && nav.canShare({ files: [file] })) {
+      nav.share({ files: [file], title: `IndoorStats · vs ${opp} · ${date}` }).catch(() => { /* cancelled */ });
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    const a = document.createElement('a');
+    a.href = url; a.download = fileName; document.body.appendChild(a); a.click(); a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   // Roster editing
@@ -439,6 +469,8 @@ export default function App() {
               commitRally={commitRally}
               onSub={handleSub}
               onUndo={handleUndo}
+              onBack={handleBack}
+              canBack={canBack}
               onRotate={rotateCourt}
               canUndo={currentSetEvents.length > 0 || !!(gameState.pending && gameState.pending.set === setNum) || !!gameState.lineups?.[setNum]?.firstServe}
               court={court}

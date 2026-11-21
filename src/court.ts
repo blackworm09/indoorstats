@@ -61,8 +61,9 @@ export function courtState(state: GameState, set: number, uptoExclusive?: number
     const e = state.events[i];
     if (e.set !== set) continue;
     if (e.kind === 'sub') {
-      if (e.outId === liberoId) { liberoId = e.inId; continue; }
-      if (e.outId === libero2Id) { libero2Id = e.inId; continue; }
+      // Libero swap (doesn't count as a sub). Swapping the two liberos of a by-phase setup trades their roles
+      if (e.outId === liberoId) { if (e.inId === libero2Id) libero2Id = liberoId; liberoId = e.inId; continue; }
+      if (e.outId === libero2Id) { if (e.inId === liberoId) liberoId = libero2Id; libero2Id = e.inId; continue; }
       positions = positions.map(id => (id === e.outId ? e.inId : id));
       replaces = replaces.map(id => (id === e.outId ? e.inId : id)); // sub inherits the libero swap
       continue;

@@ -4,8 +4,8 @@ import { AlertTriangle, Download, RotateCcw, Trash2, TrendingDown, TrendingUp } 
 import { GameState, ROLE_SHORT, Role, ScaleCode } from './types';
 import { currentSetNumber, formatMatchDate, scoreForSet } from './utils';
 import { EffLine, N_MIN } from './alerts';
-import { attackByPhase, attackByRotation, bestFirst, historyLog, impactReport, passRows, pointSources, Rating, ScaleRow, serveRows, setterRows } from './analysis';
-import { InfoDot, PASS_SCALE, SERVE_SCALE, TONE_CLASS } from './RallyView';
+import { attackBreakdown, attackByPhase, attackByRotation, bestFirst, historyLog, impactReport, passRows, pointSources, Rating, ScaleRow, serveRows, setterRows } from './analysis';
+import { ATTACK_SCALE, InfoDot, PASS_SCALE, SERVE_SCALE, TONE_CLASS } from './RallyView';
 
 interface ReportViewProps {
   gameState: GameState;
@@ -92,6 +92,7 @@ export default function ReportView({ gameState, onExport, onReset, past, selecto
   const pass = useMemo(() => { const r = passRows(gameState, setFilter); return r.length ? [r[0], ...bestFirst(r.slice(1), x => asLine(x.n, x.counts['#'] + x.counts['+']))] : r; }, [gameState, setFilter]);
   const serve = useMemo(() => { const r = serveRows(gameState, setFilter); return r.length ? [r[0], ...bestFirst(r.slice(1), x => asLine(x.n, x.counts['#'] + x.counts['+'] + x.counts['/']))] : r; }, [gameState, setFilter]);
   const history = useMemo(() => historyLog(gameState, setFilter), [gameState, setFilter]);
+  const attackRows = useMemo(() => attackBreakdown(gameState, setFilter), [gameState, setFilter]);
   const impact = useMemo(() => impactReport(gameState, setFilter), [gameState, setFilter]);
   const setters = useMemo(() => setterRows(gameState, setFilter), [gameState, setFilter]);
   const points = useMemo(() => pointSources(gameState, setFilter), [gameState, setFilter]);
@@ -126,6 +127,35 @@ export default function ReportView({ gameState, onExport, onReset, past, selecto
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] gap-x-9 gap-y-7">
+        {/* Attack per player */}
+        <Card title={t("Attack · Players")} className="xl:col-span-2"
+          info={t("Every attack and how it ended, in the colours of the rating buttons. Eff = (kills − errors − blocked) / attempts. In match view: attempts and Eff per set.")}>
+          {attackRows.length === 0 ? <Empty /> : (
+            <div className="overflow-x-auto">
+              <div className="grid gap-x-2 gap-y-2.5 items-center min-w-[640px]"
+                style={{ gridTemplateColumns: `110px 44px repeat(5, minmax(40px, 1fr)) 64px${setFilter === null ? ` repeat(${attackRows[0].bySet.length}, minmax(70px, 1fr))` : ''}` }}>
+                <span /><span className={`${th} text-right`}>{t('Att')}</span>
+                {ATTACK_SCALE.map(sc => <span key={sc.code} className={`h-6 rounded-sm flex items-center justify-center gap-1 font-display text-xs font-bold ${TONE_CLASS[sc.tone]}`} title={t(sc.label)}>{sc.sym} <span className="hidden xl:inline uppercase tracking-[0.04em]">{t(sc.label)}</span></span>)}
+                <span className={`${th} text-right`}>{t('Eff')}</span>
+                {setFilter === null && attackRows[0].bySet.map(b => <span key={b.set} className={`${th} text-center`}>{t('Set {n}', { n: b.set })}</span>)}
+                {attackRows.map(r => (
+                  <div key={r.id} className="contents" data-attack-row={r.name}>
+                    <span className={`${name} ${r.id === 'team' ? 'text-primary' : ''}`}>{r.name}</span>
+                    <span className="text-right font-display text-lg font-bold tabular-nums">{r.line.att}</span>
+                    {ATTACK_SCALE.map(sc => <span key={sc.code} className={`text-center font-display text-lg tabular-nums ${r.counts[sc.code] ? '' : 'text-mute/40'}`}>{r.counts[sc.code]}</span>)}
+                    <span className={`text-right font-display text-lg font-bold tabular-nums ${r.line.att < N_MIN ? 'opacity-55' : ''} ${r.line.eff !== null && r.line.eff >= 0.25 ? 'text-good' : r.line.eff !== null && r.line.eff < 0 ? 'text-bad' : ''}`}>{pct(r.line.eff)}</span>
+                    {setFilter === null && r.bySet.map(b => (
+                      <span key={b.set} className="text-center font-display tabular-nums">
+                        {b.line.att ? <><span className={`text-base font-bold ${b.line.eff! >= 0.25 ? 'text-good' : b.line.eff! < 0 ? 'text-bad' : ''}`}>{pct(b.line.eff)}</span> <span className="text-sm text-mute">{b.line.att}</span></> : <span className="text-mute">–</span>}
+                      </span>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </Card>
+
         {/* Attack × rotation */}
         <Card title={t("Attack · Rotation")} info={t("Attack efficiency per attacker and rotation: (kills − errors − blocked) / attempts. Small number = attempts. Faded = under 5. Side-out = rallies won when they serve. Break = rallies won when we serve.")}>
           {heat.rows.length === 0 ? <Empty /> : (
@@ -264,7 +294,7 @@ export default function ReportView({ gameState, onExport, onReset, past, selecto
 
         {/* Impact */}
         <Card title={setFilter === null ? t('Impact · Match') : t('Impact · Set {n}', { n: setFilter })}
-          info={t("What decided it. Benchmarks checked against the FIVB VNL 2025 report: attack eff below 15% is a problem, from 30% a strength. Positive passes below 35% is a problem, 50%+ with max 1 reception error per set a strength. Serve errors above 10% of serves is a problem. Also: 12+ their attack points or 3+ unforced errors per set, crunch time won or lost 60%+. Player: Pos/Neg from 3 actions. Net = points won minus points given away.")}>
+          info={t("What decided it. Benchmarks checked against the FIVB VNL 2025 report: attack eff below 15% is a problem, from 30% a strength. Positive passes below 35% is a problem, 50%+ with max 1 reception error per set a strength. Serve errors above 10% of serves is a problem when there are more errors than aces. Also: 12+ their attack points or 3+ unforced errors per set, crunch time won or lost 60%+. Player: Pos/Neg from 3 actions. Net = points won minus points given away.")}>
           {!impact.figures.length || history.length === 0 ? <Empty /> : (
             <div className="flex flex-col gap-6" data-impact>
               <div className="flex items-center justify-between gap-3">
@@ -320,7 +350,7 @@ export default function ReportView({ gameState, onExport, onReset, past, selecto
       </div>
 
       <div className="flex flex-wrap gap-2 border-t border-line pt-5">
-        <button onClick={onExport} className="h-11 px-4 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center gap-2"><Download className="w-4 h-4" /> {t("Export (email)")}</button>
+        <button onClick={onExport} className="h-11 px-4 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center gap-2"><Download className="w-4 h-4" /> {t("Export (CSV)")}</button>
         <button onClick={onReset} className="h-11 px-4 rounded-lg border border-bad/40 text-bad font-display font-bold tracking-[0.1em] uppercase text-sm flex items-center gap-2">{past ? <Trash2 className="w-4 h-4" /> : <RotateCcw className="w-4 h-4" />} {past ? t("Delete match") : t("New match")}</button>
       </div>
     </div>

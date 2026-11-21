@@ -81,7 +81,9 @@ export interface Alert { id: string; severity: number; text: string; tone: 'bad'
 
 const pct = (v: number) => `${v < 0 ? '−' : ''}${Math.abs(Math.round(v * 100))}%`;
 
-export function computeAlerts(state: GameState, rotation: number | null): Alert[] {
+// Player alerts only for players on court right now (onCourt); team alerts always
+export function computeAlerts(state: GameState, rotation: number | null, onCourt?: (string | null)[]): Alert[] {
+  const playing = (id: string) => !onCourt || onCourt.includes(id);
   const alerts: Alert[] = [];
   const info = attackInfo(state);
   const attacks = info.map(a => a.ev);
@@ -94,7 +96,7 @@ export function computeAlerts(state: GameState, rotation: number | null): Alert[
   };
   const attackers = Array.from(new Set(attacks.map(e => e.playerId)));
 
-  attackers.forEach(id => {
+  attackers.filter(playing).forEach(id => {
     const mine = attacks.filter(e => e.playerId === id);
     const m = effOf(mine);
 
@@ -161,7 +163,7 @@ export function computeAlerts(state: GameState, rotation: number | null): Alert[
   const passes = state.events.filter((e): e is StatEvent => e.kind === 'stat' && e.skill === 'pass');
   if (passes.length) {
     const teamPos = passes.filter(isPositivePass).length / passes.length;
-    Array.from(new Set(passes.map(e => e.playerId))).forEach(id => {
+    Array.from(new Set(passes.map(e => e.playerId))).filter(playing).forEach(id => {
       const recent = passes.filter(e => e.playerId === id).slice(-WINDOW);
       if (recent.length < N_MIN) return;
       const pos = recent.filter(isPositivePass).length / recent.length;
