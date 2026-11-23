@@ -213,7 +213,7 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
       {/* LEFT: alerts + stats */}
       <aside className="order-2 lg:order-1 shrink-0 lg:shrink flex flex-col lg:min-h-0 border-t lg:border-t-0 lg:border-r border-line">
         <AlertsPanel gameState={gameState} rotation={court.rotation} display={court.display} />
-        <StatsTable gameState={gameState} display={court.display} />
+        <StatsTable gameState={gameState} display={court.display} setNum={setNum} />
       </aside>
 
       {/* RIGHT: court, step, rating buttons */}
@@ -377,17 +377,44 @@ function AlertsPanel({ gameState, rotation, display }: { gameState: GameState; r
 
 const pctTxt = (n: number, d: number) => (d ? `${Math.round((n / d) * 100)}%` : '–');
 
-// Match stats per player: on court first (by number), then the bench
-function StatsTable({ gameState, display }: { gameState: GameState; display: (string | null)[] }) {
-  const atk = useMemo(() => attackBreakdown(gameState, null), [gameState]);
-  const pass = useMemo(() => passRows(gameState, null), [gameState]);
-  const serve = useMemo(() => serveRows(gameState, null), [gameState]);
+// Dot colours = the rating button colours (neutral a bit lighter so it shows on the dark panel)
+const DOT_BG: Record<Tone, string> = { poor: '#9F1239', rose: '#F43F5E', low: '#FDA4AF', neu: '#4A515C', good: '#6EE7B7', mid: '#10B981', top: '#047857' };
+const FORM_N = 5;
+const toneOfStat = (e: StatEvent): Tone => {
+  const c = e.code;
+  if (e.skill === 'attack') {
+    const k = c ?? (e.grade === 'plus' ? 'kill' : e.grade === 'minus' ? 'err' : 'play');
+    return k === 'err' || k === 'blk' ? 'poor' : k === 'rec' ? 'good' : k === 'kill' ? 'top' : 'neu'; // error and blocked: one red
+  }
+  const scale = e.skill === 'pass' ? PASS_SCALE : SERVE_SCALE;
+  const hit = c ? scale.find(x => x.code === c) : undefined;
+  return hit ? hit.tone : e.grade === 'plus' ? 'top' : e.grade === 'minus' ? 'poor' : 'neu';
+};
+
+function Dots({ list }: { list: StatEvent[] }) {
+  const last = list.slice(-FORM_N);
+  return (
+    <div className="flex gap-1.5 justify-center" data-dots={last.map(toneOfStat).join(',')}>
+      {Array.from({ length: FORM_N - last.length }).map((_, i) => <span key={`e${i}`} className="w-[18px] h-[18px] rounded-full border-[1.5px] border-dashed border-[#2E333B]" />)}
+      {last.map(e => <span key={e.id} className="w-[18px] h-[18px] rounded-full" style={{ background: DOT_BG[toneOfStat(e)] }} />)}
+    </div>
+  );
+}
+
+// SET: current set per player (on court first, then bench). FORM: each player's own last 5 per skill, on court only.
+function StatsTable({ gameState, display, setNum }: { gameState: GameState; display: (string | null)[]; setNum: number }) {
+  const [mode, setMode] = useState<'set' | 'form'>(() => { try { return localStorage.getItem('indoorstats_statsview') === 'form' ? 'form' : 'set'; } catch { return 'set'; } });
+  const pickMode = (m: 'set' | 'form') => { setMode(m); try { localStorage.setItem('indoorstats_statsview', m); } catch { /* ignore */ } };
+  const atk = useMemo(() => attackBreakdown(gameState, setNum), [gameState, setNum]);
+  const pass = useMemo(() => passRows(gameState, setNum), [gameState, setNum]);
+  const serve = useMemo(() => serveRows(gameState, setNum), [gameState, setNum]);
   const num = (p: Player) => parseInt(p.number, 10) || 999;
   const onCourt = gameState.players.filter(p => display.includes(p.id)).sort((a, b) => num(a) - num(b));
   const bench = gameState.players.filter(p => !display.includes(p.id)).sort((a, b) => num(a) - num(b));
   const th = 'font-display text-[11px] font-bold tracking-[0.08em] text-mute text-right px-1.5 pb-1.5';
   const grp = 'font-display text-[13px] font-bold tracking-[0.12em] uppercase text-ink text-center px-1.5 pb-0.5 border-l border-line';
   const td = 'text-right px-1.5 py-[5px] font-display text-[15px] font-bold tabular-nums';
+  const label = (p: Player) => p.number.trim() || p.name.trim().slice(0, 3).toUpperCase();
   const row = (p: Player, dim: boolean) => {
     const a = atk.find(r => r.id === p.id);
     const ps = pass.find(r => r.id === p.id);
@@ -401,7 +428,7 @@ function StatsTable({ gameState, display }: { gameState: GameState; display: (st
     const err = c ? c.err + c.blk : 0;
     return (
       <tr key={p.id} data-stat={p.name.trim() || p.number} className={`border-t border-line ${dim ? 'opacity-45' : ''}`}>
-        <td className="px-1.5 py-[5px] font-display text-base font-bold w-10">{p.number.trim() || p.name.trim().slice(0, 3).toUpperCase()}</td>
+        <td className="px-1.5 py-[5px] font-display text-base font-bold w-10">{label(p)}</td>
         <td className={`${td} border-l border-line ${effTone}`}>{eff === null ? '–' : `${eff < 0 ? '−' : ''}${Math.abs(Math.round(eff * 100))}%`}</td>
         <td className={`${td} ${c?.kill ? 'text-good' : 'text-mute'}`}>{c ? c.kill : 0}</td>
         <td className={`${td} ${c && c.play + c.rec ? '' : 'text-mute'}`}>{c ? c.play + c.rec : 0}</td>
@@ -414,33 +441,74 @@ function StatsTable({ gameState, display }: { gameState: GameState; display: (st
       </tr>
     );
   };
+  // FORM: whole match, in the order things happened
+  const stats = useMemo(() => gameState.events.filter((e): e is StatEvent => e.kind === 'stat'), [gameState.events]);
+  const of = (id: string, skill: Skill) => stats.filter(e => e.playerId === id && e.skill === skill);
+  const toggle = (
+    <div className="flex rounded-lg border border-line overflow-hidden" role="group" aria-label="Stats view">
+      {(['set', 'form'] as const).map(m => (
+        <button key={m} onClick={() => pickMode(m)} data-statsmode={m}
+          className={`h-8 px-3 font-display font-bold text-xs tracking-[0.1em] uppercase ${mode === m ? 'bg-primary text-[#0D0F12]' : 'text-mute'}`}>{m === 'set' ? t('Set') : t('Form')}</button>
+      ))}
+    </div>
+  );
+  const legend = (tone: Tone, text: string) => (
+    <span className="inline-flex items-center gap-1.5 mr-3"><span className="w-[11px] h-[11px] rounded-full" style={{ background: DOT_BG[tone] }} />{text}</span>
+  );
   return (
     <div className="flex-1 min-h-0 flex flex-col border-t border-line p-4 lg:px-5 lg:py-4">
       <div className="flex items-center gap-2 mb-1.5">
         <span className="font-display text-sm font-bold tracking-[0.14em] uppercase">{t('Stats')}</span>
-        <span className="font-display text-xs font-bold tracking-[0.1em] uppercase text-mute">· {t('Match')}</span>
+        <span className="font-display text-xs font-bold tracking-[0.1em] uppercase text-mute truncate">· {mode === 'set' ? `${t('Set')} ${setNum}` : t('Last 5 per player, oldest → newest')}</span>
         <div className="flex-1" />
-        <InfoDot light text={t('K kills · N in play + recycle · ERR error + blocked · TOT attacks. Pass POS # and +, NEG = / −. Serve POS # / +, NEG = and −.')} />
+        {mode === 'set' && <InfoDot light text={t('K kills · N in play + recycle · ERR error + blocked · TOT attacks. Pass POS # and +, NEG = / −. Serve POS # / +, NEG = and −.')} />}
+        {toggle}
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
-        <table className="w-full border-collapse" data-stats>
-          <thead>
-            <tr><th /><th colSpan={5} className={grp}>{t('Attack')}</th><th colSpan={2} className={grp}>{t('Pass')}</th><th colSpan={2} className={grp}>{t('Serve')}</th></tr>
-            <tr>
-              <th className={`${th} text-left`}>#</th>
-              <th className={`${th} border-l border-line`}>{t('EFF')}</th><th className={th}>K</th><th className={th}>N</th><th className={th}>{t('ERR')}</th><th className={th}>{t('TOT')}</th>
-              <th className={`${th} border-l border-line`}>{t('POS')}</th><th className={th}>{t('NEG')}</th>
-              <th className={`${th} border-l border-line`}>{t('POS')}</th><th className={th}>{t('NEG')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {onCourt.map(p => row(p, false))}
-            {bench.length > 0 && (
-              <tr><td colSpan={10} className="pt-2.5 pb-1 px-1.5 font-display text-[11px] font-bold tracking-[0.14em] uppercase text-mute border-t border-[#3A404A]">{t('Bench')}</td></tr>
-            )}
-            {bench.map(p => row(p, true))}
-          </tbody>
-        </table>
+        {mode === 'set' ? (
+          <table className="w-full border-collapse" data-stats>
+            <thead>
+              <tr><th /><th colSpan={5} className={grp}>{t('Attack')}</th><th colSpan={2} className={grp}>{t('Pass')}</th><th colSpan={2} className={grp}>{t('Serve')}</th></tr>
+              <tr>
+                <th className={`${th} text-left`}>#</th>
+                <th className={`${th} border-l border-line`}>{t('EFF')}</th><th className={th}>K</th><th className={th}>N</th><th className={th}>{t('ERR')}</th><th className={th}>{t('TOT')}</th>
+                <th className={`${th} border-l border-line`}>{t('POS')}</th><th className={th}>{t('NEG')}</th>
+                <th className={`${th} border-l border-line`}>{t('POS')}</th><th className={th}>{t('NEG')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {onCourt.map(p => row(p, false))}
+              {bench.length > 0 && (
+                <tr><td colSpan={10} className="pt-2.5 pb-1 px-1.5 font-display text-[11px] font-bold tracking-[0.14em] uppercase text-mute border-t border-[#3A404A]">{t('Bench')}</td></tr>
+              )}
+              {bench.map(p => row(p, true))}
+            </tbody>
+          </table>
+        ) : (
+          <>
+            <table className="w-full border-collapse" data-form>
+              <thead>
+                <tr>
+                  <th className={`${th} text-left`}>#</th>
+                  <th className={grp}>{t('Attack')}</th><th className={grp}>{t('Pass')}</th><th className={grp}>{t('Serve')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {onCourt.map(p => (
+                  <tr key={p.id} data-form-row={p.name.trim() || p.number} className="border-t border-line">
+                    <td className="px-1.5 py-2 font-display text-base font-bold w-10">{label(p)}</td>
+                    <td className="px-1.5 py-2 border-l border-line"><Dots list={of(p.id, 'attack')} /></td>
+                    <td className="px-1.5 py-2 border-l border-line"><Dots list={of(p.id, 'pass')} /></td>
+                    <td className="px-1.5 py-2 border-l border-line"><Dots list={of(p.id, 'serve')} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="mt-3 font-display text-[11px] font-bold tracking-[0.06em] uppercase text-mute">
+              {legend('poor', t('Error / blocked'))}{legend('neu', t('In play'))}{legend('good', t('Recycle'))}{legend('top', t('Kill'))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
