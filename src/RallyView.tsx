@@ -1,14 +1,14 @@
 import { t } from './i18n';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeftRight, Repeat, RotateCcw, RotateCw, Undo2, X } from 'lucide-react';
+import { Repeat, RotateCcw, RotateCw, X } from 'lucide-react';
 import {
   AttackCode, GameState, Grade, MatchEvent, PendingRally, Player, PointReason, RallyStep, RatingCode, ScaleCode, Skill, StatEvent, TeamSide,
   ROLE_LABEL, ROLE_SHORT, COURT_LAYOUT,
 } from './types';
 import { currentSetNumber, legalSubsIn, playerLabel, setterFor, subsUsed } from './utils';
-import { attackBoard, computeAlerts, EffLine, N_MIN } from './alerts';
-import { historyLog } from './analysis';
+import { computeAlerts, N_MIN } from './alerts';
+import { attackBreakdown, passRows, serveRows } from './analysis';
 import { CourtState, positionOf } from './court';
 
 interface RallyViewProps {
@@ -16,11 +16,9 @@ interface RallyViewProps {
   setPending: (p: PendingRally | null) => void;
   commitRally: (events: MatchEvent[], message: string, snapshot?: PendingRally) => void;
   onSub: (inId: string, outId: string) => void;
-  onUndo: () => void;      // last rally (or last sub/timeout)
   onBack: () => void;      // last action
   canBack: boolean;
   onRotate: (delta: number) => void;
-  canUndo: boolean;
   court: CourtState;
   onOpenLineup: () => void;
   onFirstServe: (team: TeamSide) => void;
@@ -92,43 +90,11 @@ export function gradeFor(skill: Skill, code: RatingCode): Grade {
 const CODE_TEXT: Record<string, string> = { err: 'error', blk: 'blocked', play: 'in play', rec: 'recycle', kill: 'kill', '-': '−' };
 const codeText = (c: RatingCode) => (CODE_TEXT[c] ? t(CODE_TEXT[c]) : c);
 
-// ---------- Where players act (attack zone derived from the role) ----------
-interface Slot { label: string; id: string | null }
-const posOf = (display: (string | null)[], id: string) => display.indexOf(id) + 1;
-
-function attackSlots(display: (string | null)[], roleOf: (id: string) => Player['role'] | undefined): Slot[][] {
-  // Arrays, not objects: number-like object keys would reorder to 2, 3, 4
-  const front: Slot[] = [{ label: '4', id: null }, { label: '3', id: null }, { label: '2', id: null }];
-  const back: Slot[] = [{ label: '', id: null }, { label: 'Pipe', id: null }, { label: 'D', id: null }];
-  const frontIds = [4, 3, 2].map(p => display[p - 1]).filter((id): id is string => !!id && roleOf(id) !== 'libero');
-  const backIds = [5, 6, 1].map(p => display[p - 1]).filter((id): id is string => !!id && roleOf(id) !== 'libero' && roleOf(id) !== 'setter');
-  const place = (slots: Slot[], ids: string[], pref: (id: string) => string | undefined, byPos: (id: string) => string) => {
-    const at = (label: string | undefined) => slots.find(x => x.label === label);
-    const left: string[] = [];
-    ids.forEach(id => { const sl = at(pref(id)); if (sl && !sl.id) sl.id = id; else left.push(id); });
-    left.forEach(id => { const sl = at(byPos(id)); if (sl && !sl.id) sl.id = id; else { const free = slots.find(x => !x.id); if (free) free.id = id; } });
-  };
-  place(front, frontIds, id => ({ outside: '4', middle: '3', opposite: '2', setter: '2' } as Record<string, string>)[roleOf(id) ?? ''], id => String(posOf(display, id)));
-  place(back, backIds, id => ({ outside: 'Pipe', opposite: 'D' } as Record<string, string>)[roleOf(id) ?? ''], id => ({ 5: '', 6: 'Pipe', 1: 'D' } as Record<number, string>)[posOf(display, id)]);
-  return [front, back];
-}
-
-// Receivers left to right as they stand: libero and outsides first, the rest below
-function passSlots(display: (string | null)[], roleOf: (id: string) => Player['role'] | undefined): Slot[][] {
-  const x = (id: string) => ({ 4: 0, 5: 0, 3: 1, 6: 1, 2: 2, 1: 2 } as Record<number, number>)[posOf(display, id)];
-  const back = (id: string) => [5, 6, 1].includes(posOf(display, id)) ? 0 : 1;
-  // Everyone on court can take the first ball (short serves): setter and middles sit in the second row
-  const ids = display.filter((id): id is string => !!id).sort((a, b) => x(a) - x(b) || back(a) - back(b));
-  const primary = ids.filter(id => roleOf(id) === 'libero' || roleOf(id) === 'outside');
-  const rest = ids.filter(id => !primary.includes(id));
-  return [primary.map(id => ({ label: '', id })), rest.map(id => ({ label: '', id }))].filter(r => r.length);
-}
-
 const STEP_TITLE: Record<RallyStep, string> = {
   our_serve: 'Our serve', opp_serve: 'Our pass', our_attack: 'Our attack', opp_attack: 'Their attack',
 };
 
-export default function RallyView({ gameState, setPending, commitRally, onSub, onUndo, onBack, canBack, onRotate, canUndo, court, onOpenLineup, onFirstServe }: RallyViewProps) {
+export default function RallyView({ gameState, setPending, commitRally, onSub, onBack, canBack, onRotate, court, onOpenLineup, onFirstServe }: RallyViewProps) {
   const setNum = currentSetNumber(gameState);
   const stored = gameState.pending && gameState.pending.set === setNum ? gameState.pending : null;
   const rally: PendingRally | null = stored ?? (court.serving ? { ...freshRally(court.serving, setNum), id: `r-${setNum}-${gameState.events.length}` } : null);
@@ -143,10 +109,6 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
   const setSelected = (id: string | null) => setPick({ key: stepKey, id });
 
   const roleOf = (id: string) => gameState.players.find(p => p.id === id)?.role;
-  const shortName = (id: string) => {
-    const i = gameState.players.findIndex(p => p.id === id);
-    return i >= 0 ? (gameState.players[i].name.trim() || playerLabel(gameState.players[i], i)) : '';
-  };
   const nameOf = (id: string) => {
     const i = gameState.players.findIndex(p => p.id === id);
     return i >= 0 ? playerLabel(gameState.players[i], i) : '';
@@ -234,35 +196,41 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
   const isEligible = (step: RallyStep, p: Player) =>
     step === 'our_serve' ? p.role !== 'libero' :
     step === 'opp_serve' ? true :
-    step === 'our_attack' ? p.role !== 'libero' : false;
+    step === 'our_attack' ? p.role !== 'libero' && !(p.role === 'setter' && [5, 6, 1].includes(court.display.indexOf(p.id) + 1)) : false;
 
   const used = subsUsed(gameState.events, setNum);
-  const lastEntry = useMemo(() => historyLog(gameState, setNum).filter(h => h.kind !== 'alert').pop(), [gameState, setNum]);
   // Subs only between rallies
   const rallyRunning = !!(stored && (stored.history.length > 0 || stored.actions.length > 0));
   const legalFor = (outId: string) => legalSubsIn(gameState, setNum, outId, court.positions);
-  const alerts = useMemo(() => computeAlerts(gameState, court.rotation, court.display).slice(0, 3), [gameState, court.rotation, court.display]);
-  const board = useMemo(() => attackBoard(gameState, court.rotation, court.display), [gameState, court.rotation, court.display]);
   const own = rally ? rally.step !== 'opp_attack' : true;
 
   const crumbs = rally ? [rally.servingTeam === 'own' ? t('We serve') : t('They serve'), ...trailOf(rally)] : [];
 
+  const needsPick = !!rally && (rally.step === 'our_serve' || rally.step === 'opp_serve' || rally.step === 'our_attack');
+
   return (
-    <div className="flex-1 min-h-0 flex flex-col lg:grid lg:grid-cols-[270px_minmax(0,1fr)_270px] xl:grid-cols-[minmax(280px,28%)_minmax(0,1fr)_minmax(300px,25%)]">
-      {/* COURT */}
-      <section className="flex flex-col gap-4 p-4 lg:p-5 border-b lg:border-b-0 lg:border-r border-line">
-        <div className="flex items-center justify-between">
-          <button onClick={onOpenLineup} className="font-display text-lg font-bold tracking-[0.08em] uppercase text-ink">
-            {court.rotation ? `R${court.rotation}` : t('Lineup')}
-          </button>
-          <div className="flex gap-1.5">
-            <button onClick={() => onRotate(-1)} aria-label="Rotate back" className="h-8 px-2 rounded-md border border-line text-mute font-display font-bold text-xs flex items-center gap-1"><RotateCcw className="w-3.5 h-3.5" />−1</button>
-            <button onClick={() => onRotate(1)} aria-label="Rotate forward" className="h-8 px-2 rounded-md border border-line text-mute font-display font-bold text-xs flex items-center gap-1"><RotateCw className="w-3.5 h-3.5" />+1</button>
+    <div className="flex-1 min-h-0 flex flex-col lg:grid lg:grid-cols-[minmax(0,47fr)_minmax(0,53fr)]">
+      {/* LEFT: alerts + stats */}
+      <aside className="order-2 lg:order-1 shrink-0 lg:shrink flex flex-col lg:min-h-0 border-t lg:border-t-0 lg:border-r border-line">
+        <AlertsPanel gameState={gameState} rotation={court.rotation} display={court.display} />
+        <StatsTable gameState={gameState} display={court.display} />
+      </aside>
+
+      {/* RIGHT: court, step, rating buttons */}
+      <section className={`order-1 lg:order-2 shrink-0 lg:shrink flex flex-col lg:min-h-0 gap-3 p-4 lg:px-5 lg:py-4 border-t-[3px] ${own ? 'border-t-primary' : 'border-t-secondary bg-[#1C1A24]'}`}>
+        <div className="flex items-center gap-1.5">
+          <button onClick={() => onRotate(-1)} aria-label="Rotate back" className="h-9 px-2.5 rounded-md border border-line text-mute font-display font-bold text-xs flex items-center gap-1"><RotateCcw className="w-3.5 h-3.5" />−1</button>
+          <button onClick={() => onRotate(1)} aria-label="Rotate forward" className="h-9 px-2.5 rounded-md border border-line text-mute font-display font-bold text-xs flex items-center gap-1"><RotateCw className="w-3.5 h-3.5" />+1</button>
+          <div className="flex-1 flex justify-center">
+            <button onClick={onOpenLineup} data-rotation className="h-9 px-3 rounded-md border border-line font-display text-lg font-bold tracking-[0.08em] uppercase text-ink">
+              {court.rotation ? `R${court.rotation}` : t('Lineup')}
+            </button>
           </div>
+          <span data-subs className={`font-display font-bold tracking-[0.08em] uppercase text-[13px] whitespace-nowrap ${used >= gameState.subLimit ? 'text-bad' : 'text-mute'}`}>{t('Subs')} {used}/{gameState.subLimit}</span>
         </div>
-        <div className="border-t-[3px] border-ink pt-3 space-y-3">
+        <div className="space-y-2.5">
           {COURT_LAYOUT.map((row, r) => (
-            <div key={r} className={`grid grid-cols-3 gap-2 ${r === 1 ? 'pt-3 border-t border-dashed border-line' : ''}`}>
+            <div key={r} className={`grid grid-cols-3 gap-2.5 ${r === 1 ? 'pt-2.5 border-t border-dashed border-line' : ''}`}>
               {row.map(pos => {
                 const id = court.display[pos - 1];
                 const i = gameState.players.findIndex(p => p.id === id);
@@ -270,7 +238,7 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
                 const ok = !!(p && rally && isEligible(rally.step, p));
                 return (
                   <CourtSlot key={pos} pos={pos} player={p} label={p ? (p.name.trim() || playerLabel(p, i)) : '–'} selected={!!p && selected === p.id}
-                    dimmed={!!rally && rally.step !== 'opp_attack' && !ok}
+                    dimmed={needsPick && !ok}
                     onTap={() => { if (!p) return; if (ok) setSelected(p.id); else setQuickFor(p.id); }}
                     onLong={() => p && setQuickFor(p.id)} />
                 );
@@ -278,27 +246,14 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
             </div>
           ))}
         </div>
-        <p className="text-[11px] text-mute font-display tracking-[0.08em] uppercase">{t("Hold a player for error or sub")}</p>
-        <button onClick={replay} disabled={!rally} data-replay
-          className="mt-auto h-10 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-[13px] flex items-center justify-center gap-1.5 text-mute disabled:opacity-30"><Repeat className="w-4 h-4" /> {t("Replay")}</button>
-        <div className="grid grid-cols-[3fr_2fr] gap-2">
-          <button onClick={onUndo} disabled={!canUndo} data-undo-rally
-            className="h-12 rounded-lg border border-line font-display font-bold tracking-[0.06em] uppercase text-[13px] flex flex-col items-center justify-center leading-tight disabled:opacity-30 min-w-0 px-1.5">
-            <span className="flex items-center gap-1.5 whitespace-nowrap"><Undo2 className="w-4 h-4 shrink-0" /> {t('Last rally')}</span>
-            {lastEntry && <span className="text-[10px] font-semibold tracking-[0.04em] text-mute truncate max-w-full normal-case">{lastEntry.kind === 'point' ? `${lastEntry.own}:${lastEntry.opponent} · ` : ''}{lastEntry.text}</span>}
-          </button>
-          <div data-subs className={`h-12 flex items-center justify-center font-display font-bold tracking-[0.06em] uppercase text-[13px] whitespace-nowrap px-1 ${used >= gameState.subLimit ? 'text-bad' : 'text-mute'}`}>{t('Subs')} {used}/{gameState.subLimit}</div>
-        </div>
-      </section>
+        <p className="text-[11px] text-mute font-display tracking-[0.08em] uppercase -mt-1">{t("Hold a player for error or sub")}</p>
 
-      {/* PHASE PANEL */}
-      <section className={`flex flex-col p-4 lg:p-6 border-t-[3px] ${own ? 'border-t-primary' : 'border-t-secondary bg-[#1C1A24]'}`}>
         {!rally ? (
           <div className="flex-1 flex items-center justify-center">
             {court.hasLineup ? (
-              <div className="grid grid-cols-2 gap-3 w-full max-w-xl">
-                <button onClick={() => onFirstServe('own')} className="h-32 rounded-xl bg-primary text-[#0D0F12] font-display font-bold tracking-[0.12em] uppercase text-2xl">{t("We serve")}</button>
-                <button onClick={() => onFirstServe('opponent')} className="h-32 rounded-xl bg-secondary text-[#0D0F12] font-display font-bold tracking-[0.12em] uppercase text-2xl">{t("They serve")}</button>
+              <div className="grid grid-cols-2 gap-3 w-full">
+                <button onClick={() => onFirstServe('own')} className="h-28 rounded-xl bg-primary text-[#0D0F12] font-display font-bold tracking-[0.12em] uppercase text-2xl">{t("We serve")}</button>
+                <button onClick={() => onFirstServe('opponent')} className="h-28 rounded-xl bg-secondary text-[#0D0F12] font-display font-bold tracking-[0.12em] uppercase text-2xl">{t("They serve")}</button>
               </div>
             ) : (
               <button onClick={onOpenLineup} className="h-20 px-10 rounded-xl bg-primary text-[#0D0F12] font-display font-bold tracking-[0.12em] uppercase text-xl">{t('Set lineup for set {n}', { n: setNum })}</button>
@@ -306,29 +261,27 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
           </div>
         ) : (
           <>
-            <h2 className={`font-display text-3xl font-bold tracking-[0.06em] uppercase ${own ? 'text-primary' : 'text-secondary'}`}>{t(STEP_TITLE[rally.step])}</h2>
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1 font-display text-sm font-semibold tracking-[0.1em] uppercase text-mute">
+            <div className="flex items-center gap-3 mt-1">
+              <h2 className={`flex-1 font-display text-2xl xl:text-3xl font-bold tracking-[0.06em] uppercase leading-none ${own ? 'text-primary' : 'text-secondary'}`}>{t(STEP_TITLE[rally.step])}</h2>
+              <button onClick={replay} data-replay
+                className="h-9 px-3 rounded-lg border border-line font-display font-bold tracking-[0.1em] uppercase text-xs flex items-center gap-1.5 text-mute"><Repeat className="w-4 h-4" /> {t("Replay")}</button>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 -mt-1 font-display text-[13px] font-semibold tracking-[0.1em] uppercase text-mute">
               {/* Back = last action. Right after a point it reopens that rally at its final rating */}
               <button onClick={onBack} disabled={!canBack} data-back
                 className="h-8 px-3 mr-1 rounded-md border-[1.5px] border-primary text-primary font-display font-bold text-xs tracking-[0.1em] uppercase disabled:opacity-25 disabled:border-line disabled:text-mute">← {t('Back')}</button>
               {crumbs.map((c, i) => <span key={i}>{i > 0 && <span className="mr-2 opacity-50">/</span>}{c}</span>)}
             </div>
-            <div className="flex-1 flex flex-col justify-center py-6">
+            <div className="lg:flex-1 flex flex-col justify-center py-2 lg:py-0">
               {/* No exit animation: old buttons must never stay tappable after a step change */}
               <motion.div key={stepKey} initial={{ opacity: 0.4 }} animate={{ opacity: 1 }} transition={{ duration: 0.1 }}>
-                  {rally.step === 'our_serve' && <Scale items={SERVE_SCALE} cols={3} disabled={!selected} onPick={rateServe} />}
-                  {rally.step === 'opp_serve' && <>
-                    <Picker rows={passSlots(court.display, roleOf)} selected={selected} onPick={setSelected} label={shortName} roleOf={roleOf} />
-                    <Scale items={PASS_SCALE} cols={3} compact disabled={!selected} onPick={ratePass} />
-                  </>}
-                  {rally.step === 'our_attack' && <>
-                    <Picker rows={attackSlots(court.display, roleOf)} selected={selected} onPick={setSelected} label={shortName} roleOf={roleOf} />
-                    <Scale items={ATTACK_SCALE} cols={5} compact disabled={!selected} onPick={rateAttack} />
-                  </>}
-                  {rally.step === 'opp_attack' && <Scale items={OPP_ATTACK_SCALE} cols={5} disabled={false} onPick={rateOpp} />}
-                  {rally.step === 'our_serve' && !selected && (
-                    <p className="mt-3 text-center font-display text-xs font-semibold tracking-[0.12em] uppercase text-mute">{t("Tap the player on the court")}</p>
-                  )}
+                {rally.step === 'our_serve' && <Scale items={SERVE_SCALE} cols={3} disabled={!selected} onPick={rateServe} />}
+                {rally.step === 'opp_serve' && <Scale items={PASS_SCALE} cols={3} disabled={!selected} onPick={ratePass} />}
+                {rally.step === 'our_attack' && <Scale items={ATTACK_SCALE} cols={5} disabled={!selected} onPick={rateAttack} />}
+                {rally.step === 'opp_attack' && <Scale items={OPP_ATTACK_SCALE} cols={5} disabled={false} onPick={rateOpp} />}
+                {needsPick && !selected && (
+                  <p className="mt-3 text-center font-display text-xs font-semibold tracking-[0.12em] uppercase text-mute">{t("Tap the player on the court")}</p>
+                )}
               </motion.div>
             </div>
             <div className="grid grid-cols-3 gap-2">
@@ -346,45 +299,6 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
         )}
       </section>
 
-      {/* ALERTS + ATTACK BOARD */}
-      <aside className="flex flex-col gap-5 p-4 lg:p-5 border-t lg:border-t-0 lg:border-l border-line lg:overflow-y-auto">
-        <div className="flex flex-col gap-2.5">
-          <div className="flex items-center justify-between">
-            <span className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">{t("Alerts")}</span>
-            <InfoDot light text={t('Max 3, most important first. Shown while true. No rate before {n} actions.', { n: N_MIN })} />
-          </div>
-          {alerts.length === 0 && <span className="text-sm text-mute">{t("Nothing right now.")}</span>}
-          {alerts.map(a => (
-            <div key={a.id} data-alert={a.id} className="flex gap-2 text-sm leading-snug">
-              <span className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${a.tone === 'bad' ? 'bg-bad' : 'bg-mute'}`} />
-              <span>{a.text}</span>
-            </div>
-          ))}
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between">
-            <span className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">{t("Attack")}</span>
-            <InfoDot light text={t("Eff = (kills − errors − blocked) / attempts. Att = attempts. Now = current rotation.")} />
-          </div>
-          <div className="grid grid-cols-[minmax(0,1fr)_44px_28px_44px_28px] gap-x-1.5 items-baseline font-display text-[11px] font-bold tracking-[0.1em] text-mute">
-            <span />
-            <span className="col-span-2 text-center">{t("MATCH")}</span>
-            <span className="col-span-2 text-center text-ink">{t('NOW')} {court.rotation ? `R${court.rotation}` : ''}</span>
-            <span>{t("PLAYER")}</span><span className="text-right">{t("EFF")}</span><span className="text-right">{t("ATT")}</span><span className="text-right">{t("EFF")}</span><span className="text-right">{t("ATT")}</span>
-          </div>
-          {board.map(r => (
-            <div key={r.playerId} data-board={r.name} data-oncourt={court.display.includes(r.playerId) ? '1' : '0'}
-              className={`grid grid-cols-[minmax(0,1fr)_44px_28px_44px_28px] gap-x-1.5 items-baseline py-1.5 border-t border-line ${court.display.includes(r.playerId) ? '' : 'opacity-40'}`}>
-              <span className="font-display text-sm xl:text-base font-bold uppercase truncate">{r.name} <span className="text-[11px] text-mute">{t(ROLE_SHORT[r.role as Player['role']])}</span></span>
-              <EffCell line={r.match} />
-              <span className="text-right font-display text-sm text-mute tabular-nums">{r.match.att}</span>
-              <EffCell line={r.now} />
-              <span className="text-right font-display text-sm text-mute tabular-nums">{r.now.att || '–'}</span>
-            </div>
-          ))}
-        </div>
-      </aside>
-
       <AnimatePresence>
         {quickFor && (
           <QuickSheet key="quick" player={gameState.players.find(p => p.id === quickFor)!} pos={positionOf(court, quickFor)}
@@ -397,39 +311,146 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
   );
 }
 
+// ---------- Left panel ----------
+
+type AlertFilter = 'all' | 'player' | 'rotation' | 'team';
+const alertCat = (id: string): Exclude<AlertFilter, 'all'> => /^A(3|4|8r)/.test(id) ? 'rotation' : /^A(5|7)$/.test(id) ? 'team' : 'player';
+const FILTER_LABEL: Record<AlertFilter, string> = { all: 'All', player: 'Players', rotation: 'Rotation', team: 'Team' };
+const TAG_LABEL: Record<Exclude<AlertFilter, 'all'>, string> = { player: 'Player', rotation: 'Rotation', team: 'Team' };
+
+// Top 3 now; Show all = every alert that is true now plus everything logged this match
+function AlertsPanel({ gameState, rotation, display }: { gameState: GameState; rotation: number | null; display: (string | null)[] }) {
+  const [showAll, setShowAll] = useState(false);
+  const [filter, setFilter] = useState<AlertFilter>('all');
+  const [menu, setMenu] = useState(false);
+  const all = useMemo(() => computeAlerts(gameState, rotation, display), [gameState, rotation, display]);
+  const keep = (id: string) => filter === 'all' || alertCat(id) === filter;
+  const now = all.filter(a => keep(a.id));
+  const shown = showAll ? now : now.slice(0, 3);
+  const log = showAll ? [...(gameState.alertLog ?? [])].filter(a => keep(a.id)).reverse() : [];
+  const tagTone = (id: string) => alertCat(id) === 'rotation' ? 'text-[#FDA4AF]' : alertCat(id) === 'team' ? 'text-secondary' : 'text-primary';
+  return (
+    <div className={`flex flex-col p-4 lg:px-5 lg:py-4 min-h-0 ${showAll ? 'flex-1' : ''}`}>
+      <div className="flex items-center gap-2 mb-2">
+        <span className="font-display text-sm font-bold tracking-[0.14em] uppercase">{t("Alerts")}</span>
+        <span className="font-display text-xs font-bold tracking-[0.1em] uppercase text-mute">· {now.length}</span>
+        <InfoDot light text={t('Max 3, most important first. Shown while true. No rate before {n} actions.', { n: N_MIN })} />
+        <div className="flex-1" />
+        <div className="relative">
+          <button onClick={() => setMenu(m => !m)} data-alert-filter
+            className="h-8 px-2.5 rounded-md border border-line font-display font-bold tracking-[0.08em] uppercase text-xs whitespace-nowrap">{t('Filter')}: {t(FILTER_LABEL[filter])} ▾</button>
+          {menu && (
+            <div className="absolute right-0 top-[calc(100%+6px)] z-30 w-44 rounded-lg bg-surface border border-line shadow-2xl p-1">
+              {(Object.keys(FILTER_LABEL) as AlertFilter[]).map(f => (
+                <button key={f} onClick={() => { setFilter(f); setMenu(false); }}
+                  className={`w-full text-left px-3 py-2 rounded-md font-display font-bold tracking-[0.06em] uppercase text-sm ${filter === f ? 'text-primary bg-background' : ''}`}>{t(FILTER_LABEL[f])}</button>
+              ))}
+            </div>
+          )}
+        </div>
+        <button onClick={() => setShowAll(v => !v)} data-alert-all
+          className={`h-8 px-2.5 rounded-md border font-display font-bold tracking-[0.08em] uppercase text-xs whitespace-nowrap ${showAll ? 'border-primary text-primary' : 'border-line'}`}>{showAll ? t('Top 3') : t('Show all')}</button>
+      </div>
+      <div className={showAll ? 'flex-1 min-h-0 overflow-y-auto' : ''}>
+        {shown.length === 0 && <p className="text-sm text-mute py-2">{t("Nothing right now.")}</p>}
+        {shown.map(a => (
+          <div key={a.id} data-alert={a.id} className="flex gap-3 items-start py-2 border-t border-line">
+            <span className={`w-[70px] shrink-0 pt-0.5 font-display text-[11px] font-bold tracking-[0.1em] uppercase ${tagTone(a.id)}`}>{t(TAG_LABEL[alertCat(a.id)])}</span>
+            <span className={`text-sm leading-snug font-bold ${a.tone === 'bad' ? '' : 'text-mute'}`}>{a.text}</span>
+          </div>
+        ))}
+        {showAll && log.length > 0 && (
+          <>
+            <div className="pt-3 pb-1 font-display text-[11px] font-bold tracking-[0.14em] uppercase text-mute">{t('Earlier')}</div>
+            {log.map((a, k) => (
+              <div key={`${a.id}-${a.time}-${k}`} data-alert-log className="flex gap-3 items-start py-1.5 border-t border-line">
+                <span className="w-[70px] shrink-0 pt-0.5 font-display text-[11px] font-bold tracking-[0.06em] text-mute whitespace-nowrap">{t('SET')} {a.set} · {a.own}:{a.opponent}</span>
+                <span className="text-[13px] leading-snug text-mute">{a.text}</span>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const pctTxt = (n: number, d: number) => (d ? `${Math.round((n / d) * 100)}%` : '–');
+
+// Match stats per player: on court first (by number), then the bench
+function StatsTable({ gameState, display }: { gameState: GameState; display: (string | null)[] }) {
+  const atk = useMemo(() => attackBreakdown(gameState, null), [gameState]);
+  const pass = useMemo(() => passRows(gameState, null), [gameState]);
+  const serve = useMemo(() => serveRows(gameState, null), [gameState]);
+  const num = (p: Player) => parseInt(p.number, 10) || 999;
+  const onCourt = gameState.players.filter(p => display.includes(p.id)).sort((a, b) => num(a) - num(b));
+  const bench = gameState.players.filter(p => !display.includes(p.id)).sort((a, b) => num(a) - num(b));
+  const th = 'font-display text-[11px] font-bold tracking-[0.08em] text-mute text-right px-1.5 pb-1.5';
+  const grp = 'font-display text-[13px] font-bold tracking-[0.12em] uppercase text-ink text-center px-1.5 pb-0.5 border-l border-line';
+  const td = 'text-right px-1.5 py-[5px] font-display text-[15px] font-bold tabular-nums';
+  const row = (p: Player, dim: boolean) => {
+    const a = atk.find(r => r.id === p.id);
+    const ps = pass.find(r => r.id === p.id);
+    const sv = serve.find(r => r.id === p.id);
+    const c = a?.counts;
+    const eff = a?.line.eff ?? null;
+    const att = a?.line.att ?? 0;
+    const effTone = eff === null || att < N_MIN ? 'text-mute' : eff >= 0.3 ? 'text-good' : eff < 0.15 ? 'text-bad' : '';
+    const pPos = ps ? ps.counts['#'] + ps.counts['+'] : 0;
+    const pTone = !ps || ps.n < N_MIN ? '' : pPos / ps.n >= 0.5 ? 'text-good' : pPos / ps.n < 0.35 ? 'text-bad' : '';
+    const err = c ? c.err + c.blk : 0;
+    return (
+      <tr key={p.id} data-stat={p.name.trim() || p.number} className={`border-t border-line ${dim ? 'opacity-45' : ''}`}>
+        <td className="px-1.5 py-[5px] font-display text-base font-bold w-10">{p.number.trim() || p.name.trim().slice(0, 3).toUpperCase()}</td>
+        <td className={`${td} border-l border-line ${effTone}`}>{eff === null ? '–' : `${eff < 0 ? '−' : ''}${Math.abs(Math.round(eff * 100))}%`}</td>
+        <td className={`${td} ${c?.kill ? 'text-good' : 'text-mute'}`}>{c ? c.kill : 0}</td>
+        <td className={`${td} ${c && c.play + c.rec ? '' : 'text-mute'}`}>{c ? c.play + c.rec : 0}</td>
+        <td className={`${td} ${err ? 'text-bad' : 'text-mute'}`}>{err}</td>
+        <td className={`${td} text-mute`}>{att}</td>
+        <td className={`${td} border-l border-line ${pTone}`}>{ps ? pctTxt(pPos, ps.n) : '–'}</td>
+        <td className={td}>{ps ? pctTxt(ps.counts['='] + ps.counts['/'] + ps.counts['-'], ps.n) : '–'}</td>
+        <td className={`${td} border-l border-line`}>{sv ? pctTxt(sv.counts['#'] + sv.counts['/'] + sv.counts['+'], sv.n) : '–'}</td>
+        <td className={td}>{sv ? pctTxt(sv.counts['='] + sv.counts['-'], sv.n) : '–'}</td>
+      </tr>
+    );
+  };
+  return (
+    <div className="flex-1 min-h-0 flex flex-col border-t border-line p-4 lg:px-5 lg:py-4">
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="font-display text-sm font-bold tracking-[0.14em] uppercase">{t('Stats')}</span>
+        <span className="font-display text-xs font-bold tracking-[0.1em] uppercase text-mute">· {t('Match')}</span>
+        <div className="flex-1" />
+        <InfoDot light text={t('K kills · N in play + recycle · ERR error + blocked · TOT attacks. Pass POS # and +, NEG = / −. Serve POS # / +, NEG = and −.')} />
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <table className="w-full border-collapse" data-stats>
+          <thead>
+            <tr><th /><th colSpan={5} className={grp}>{t('Attack')}</th><th colSpan={2} className={grp}>{t('Pass')}</th><th colSpan={2} className={grp}>{t('Serve')}</th></tr>
+            <tr>
+              <th className={`${th} text-left`}>#</th>
+              <th className={`${th} border-l border-line`}>{t('EFF')}</th><th className={th}>K</th><th className={th}>N</th><th className={th}>{t('ERR')}</th><th className={th}>{t('TOT')}</th>
+              <th className={`${th} border-l border-line`}>{t('POS')}</th><th className={th}>{t('NEG')}</th>
+              <th className={`${th} border-l border-line`}>{t('POS')}</th><th className={th}>{t('NEG')}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {onCourt.map(p => row(p, false))}
+            {bench.length > 0 && (
+              <tr><td colSpan={10} className="pt-2.5 pb-1 px-1.5 font-display text-[11px] font-bold tracking-[0.14em] uppercase text-mute border-t border-[#3A404A]">{t('Bench')}</td></tr>
+            )}
+            {bench.map(p => row(p, true))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export function freshRally(servingTeam: TeamSide, set: number): PendingRally {
   return { id: uid('r'), set, servingTeam, step: servingTeam === 'own' ? 'our_serve' : 'opp_serve', actions: [], trail: [], history: [] };
 }
 
 // ---------- Pieces ----------
-
-// Player picker in the middle panel: one place to tap, laid out as they play
-function Picker({ rows, selected, onPick, label, roleOf }: { rows: Slot[][]; selected: string | null; onPick: (id: string) => void; label: (id: string) => string; roleOf: (id: string) => Player['role'] | undefined }) {
-  return (
-    <div className="flex flex-col gap-2 mb-4">
-      {rows.map((row, r) => (
-        <div key={r} className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.max(3, row.length)}, minmax(0, 1fr))` }}>
-          {row.map((slot, k) => slot.id ? (
-            <button key={slot.id} data-pick={label(slot.id)} onClick={() => onPick(slot.id!)}
-              className={`relative h-14 lg:h-16 rounded-lg flex flex-col items-center justify-center transition-all active:scale-95 ${
-                selected === slot.id ? 'border-2 border-primary bg-primary/10 text-primary' : r > 0 && rows.length > 1 && !slot.label ? 'border border-line text-mute' : 'border border-line'}`}>
-              {slot.label && <span className="absolute top-1 left-2 font-display text-[10px] font-bold tracking-[0.1em] text-mute uppercase">{t(slot.label)}</span>}
-              <span className="font-display text-lg lg:text-xl font-bold uppercase leading-none truncate max-w-full px-2">{label(slot.id)}</span>
-              <span className="font-display text-[10px] font-semibold tracking-[0.1em] text-mute">{t(ROLE_SHORT[roleOf(slot.id) ?? 'outside'])}</span>
-            </button>
-          ) : <div key={`e${k}`} className="h-14 lg:h-16" />)}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// Efficiency: green from 30%, red below 0. Muted until N_MIN attempts.
-function EffCell({ line }: { line: EffLine }) {
-  if (line.eff === null) return <span className="text-right font-display text-base text-mute">–</span>;
-  const tone = line.att < N_MIN ? 'text-mute' : line.eff >= 0.3 ? 'text-good' : line.eff < 0 ? 'text-bad' : 'text-ink';
-  return <span className={`text-right font-display text-sm xl:text-base font-bold tabular-nums whitespace-nowrap ${tone}`}>{line.eff < 0 ? '−' : ''}{Math.abs(Math.round(line.eff * 100))}%</span>;
-}
 
 export function InfoDot({ text, light }: { text: string; light?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -458,7 +479,7 @@ export function InfoDot({ text, light }: { text: string; light?: boolean }) {
   );
 }
 
-function Scale<C extends RatingCode>({ items, cols, disabled, onPick, compact }: { items: ScaleItem<C>[]; cols: 3 | 5; disabled: boolean; onPick: (c: C) => void; compact?: boolean }) {
+function Scale<C extends RatingCode>({ items, cols, disabled, onPick }: { items: ScaleItem<C>[]; cols: 3 | 5; disabled: boolean; onPick: (c: C) => void }) {
   return (
     <div className={`grid gap-2 ${cols === 3 ? 'grid-cols-3' : 'grid-cols-5'}`}>
       {items.map(it => {
@@ -466,7 +487,7 @@ function Scale<C extends RatingCode>({ items, cols, disabled, onPick, compact }:
         return (
           <div key={it.code} className="relative">
             <button onClick={() => onPick(it.code)} disabled={disabled} data-code={it.code}
-              className={`w-full ${compact ? (cols === 3 ? 'h-20 lg:h-24' : 'h-24 lg:h-28') : cols === 3 ? 'h-28 lg:h-32' : 'h-28 lg:h-36'} rounded-xl flex flex-col items-center justify-center gap-1.5 transition-transform active:scale-95 disabled:opacity-30 ${TONE_CLASS[it.tone]} ${TONE_BORDER[it.tone]}`}>
+              className={`w-full ${cols === 3 ? 'h-20 lg:h-[88px] xl:h-28' : 'h-24 lg:h-28 xl:h-32'} rounded-xl flex flex-col items-center justify-center gap-1.5 transition-transform active:scale-95 disabled:opacity-30 ${TONE_CLASS[it.tone]} ${TONE_BORDER[it.tone]}`}>
               <span className={`font-display font-bold leading-[0.9] ${cols === 3 ? 'text-5xl' : 'text-[44px]'}`}>{it.sym}</span>
               <span className={`font-display font-bold uppercase text-center leading-tight px-1 ${cols === 3 ? 'text-[15px] tracking-[0.12em]' : 'text-[12px] lg:text-[13px] tracking-[0.02em]'}`}>{t(it.label)}</span>
             </button>
@@ -502,13 +523,14 @@ function CourtSlot({ pos, player, label, selected, dimmed, onTap, onLong }: {
       onContextMenu={e => { e.preventDefault(); if (origin.current || timer.current) fireLong(); }}
       onClick={() => { if (!longFired.current) onTap(); longFired.current = false; }}
       style={{ WebkitTouchCallout: 'none', touchAction: 'manipulation' }}
-      className={`h-20 lg:h-24 rounded-lg flex flex-col items-center justify-center gap-0.5 px-1 transition-all select-none ${
+      data-slot={label} data-dim={dimmed ? '1' : '0'}
+      className={`h-[68px] xl:h-20 rounded-lg flex flex-col items-center justify-center gap-0.5 px-1 transition-all select-none ${
         selected ? 'border-[1.5px] border-primary bg-primary/10' : libero ? 'border border-dashed border-mute' : 'border border-line'
       } ${dimmed ? 'opacity-35' : ''}`}>
       <span className="font-display text-[11px] font-semibold tracking-[0.1em] text-mute">P{pos}</span>
       {/* Narrow court column (iPad landscape): smaller name, no jersey number */}
-      <span className={`font-display text-lg lg:text-base xl:text-xl font-bold uppercase leading-none truncate max-w-full ${selected ? 'text-primary' : ''}`}>{label}</span>
-      {player && <span className="font-display text-[11px] font-semibold tracking-[0.1em] text-mute whitespace-nowrap">{player.name.trim() && player.number.trim() ? <span className="lg:hidden xl:inline">#{player.number.trim()} · </span> : null}{t(ROLE_SHORT[player.role])}</span>}
+      <span className={`font-display text-lg xl:text-xl font-bold uppercase leading-none truncate max-w-full ${selected ? 'text-primary' : ''}`}>{label}</span>
+      {player && <span className="font-display text-[11px] font-semibold tracking-[0.1em] text-mute whitespace-nowrap">{player.name.trim() && player.number.trim() ? <span>#{player.number.trim()} · </span> : null}{t(ROLE_SHORT[player.role])}</span>}
     </button>
   );
 }

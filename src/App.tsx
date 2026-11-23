@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { XCircle, Trophy, Plus, Trash2, Minus, Maximize } from 'lucide-react';
+import { XCircle, Trophy, Plus, Trash2, Minus, Maximize, Undo2, Redo2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GameState, MatchEvent, PendingRally, Player, Role, TeamSide, ROLE_LABEL, ROLE_SHORT, ROLES, SetLineup, TIMEOUTS_PER_SET } from './types';
 import {
@@ -242,30 +242,48 @@ export default function App() {
     return !!lr && lr.set === setNum && currentSetEvents[currentSetEvents.length - 1]?.rallyId === lr.rallyId;
   })();
 
-  // Last rally: the whole last point (or the last sub/timeout) comes off; a rally in progress is dropped too
-  const handleUndo = () => {
-    setGameState(prev => {
-      const s = currentSetNumber(prev);
-      let lastIdx = -1;
-      for (let i = prev.events.length - 1; i >= 0; i--) {
-        if (prev.events[i].set === s) { lastIdx = i; break; }
-      }
-      if (lastIdx < 0) {
-        if (prev.pending) return { ...prev, pending: null };
-        // Nothing played yet: undo the first-serve choice so it can be picked again
-        const lu = prev.lineups?.[s];
-        return lu?.firstServe ? { ...prev, lineups: { ...prev.lineups, [s]: { ...lu, firstServe: null } } } : prev;
-      }
-      const last = prev.events[lastIdx];
-      const events = last.rallyId
-        ? prev.events.filter(e => e.rallyId !== last.rallyId)
-        : prev.events.filter((_, i) => i !== lastIdx);
-      // A timeout/sub comes off alone; the rally in progress stays
-      const side = last.kind === 'sub' || last.kind === 'rotate' || last.kind === 'timeout';
-      return { ...prev, events, pending: side ? prev.pending : null, lastRally: side ? prev.lastRally : null };
-    });
-    flash('Undone');
+  // Undo (header) = the whole last rally (or the last sub/rotate/timeout); a rally in progress is dropped too
+  const undoRallyOf = (prev: GameState): GameState => {
+    const s = currentSetNumber(prev);
+    let lastIdx = -1;
+    for (let i = prev.events.length - 1; i >= 0; i--) {
+      if (prev.events[i].set === s) { lastIdx = i; break; }
+    }
+    if (lastIdx < 0) {
+      if (prev.pending) return { ...prev, pending: null };
+      // Nothing played yet: undo the first-serve choice so it can be picked again
+      const lu = prev.lineups?.[s];
+      return lu?.firstServe ? { ...prev, lineups: { ...prev.lineups, [s]: { ...lu, firstServe: null } } } : prev;
+    }
+    const last = prev.events[lastIdx];
+    const events = last.rallyId
+      ? prev.events.filter(e => e.rallyId !== last.rallyId)
+      : prev.events.filter((_, i) => i !== lastIdx);
+    // A timeout/sub comes off alone; the rally in progress stays
+    const side = last.kind === 'sub' || last.kind === 'rotate' || last.kind === 'timeout';
+    return { ...prev, events, pending: side ? prev.pending : null, lastRally: side ? prev.lastRally : null };
   };
+  // Redo brings back what Undo removed, as long as nothing else happened in between
+  const [redoStack, setRedoStack] = useState<GameState[]>([]);
+  const undoResult = useRef<GameState | null>(null);
+  useEffect(() => {
+    if (gameState !== undoResult.current && redoStack.length) setRedoStack([]);
+  }, [gameState]); // eslint-disable-line react-hooks/exhaustive-deps
+  const handleUndo = () => {
+    const next = undoRallyOf(gameState);
+    if (next === gameState) return;
+    setRedoStack(r => [...r, gameState]);
+    undoResult.current = next;
+    setGameState(next);
+  };
+  const handleRedo = () => {
+    const top = redoStack[redoStack.length - 1];
+    if (!top) return;
+    setRedoStack(r => r.slice(0, -1));
+    undoResult.current = top;
+    setGameState(top);
+  };
+  const canUndo = currentSetEvents.length > 0 || !!(gameState.pending && gameState.pending.set === setNum) || !!gameState.lineups?.[setNum]?.firstServe;
 
   const commitRally = (events: MatchEvent[], message: string, snapshot?: PendingRally) => {
     const rallyId = events.find(e => e.rallyId)?.rallyId;
@@ -431,6 +449,14 @@ export default function App() {
           <span className="font-display text-[11px] font-bold tracking-[0.14em] text-secondary hidden sm:inline">{t("THEM")}</span>
           <span className="font-display text-[11px] font-semibold tracking-[0.12em] text-mute ml-2 hidden xl:inline whitespace-nowrap">{t('SET')} {matchOver ? '–' : setNum} · {gameState.sets.own}–{gameState.sets.opponent} · {t('TO {n}', { n: setLimit })}</span>
         </div>
+        {view === 'track' && !matchOver && (
+          <div className="flex gap-1.5">
+            <button onClick={handleUndo} disabled={!canUndo} data-undo-rally aria-label={t('Undo last rally')} title={t('Undo last rally')}
+              className="h-9 w-9 rounded-md border border-line flex items-center justify-center disabled:opacity-30"><Undo2 className="w-4 h-4" /></button>
+            <button onClick={handleRedo} disabled={!redoStack.length} data-redo-rally aria-label={t('Redo')} title={t('Redo')}
+              className="h-9 w-9 rounded-md border border-line flex items-center justify-center disabled:opacity-30"><Redo2 className="w-4 h-4" /></button>
+          </div>
+        )}
         {(['own', 'opponent'] as TeamSide[]).map(team => {
           const n = timeoutsUsed(team);
           return (
@@ -468,11 +494,9 @@ export default function App() {
               setPending={setPending}
               commitRally={commitRally}
               onSub={handleSub}
-              onUndo={handleUndo}
               onBack={handleBack}
               canBack={canBack}
               onRotate={rotateCourt}
-              canUndo={currentSetEvents.length > 0 || !!(gameState.pending && gameState.pending.set === setNum) || !!gameState.lineups?.[setNum]?.firstServe}
               court={court}
               onOpenLineup={() => setShowLineup(true)}
               onFirstServe={team => setGameState(prev => prev.lineups?.[setNum] ? ({ ...prev, lineups: { ...prev.lineups, [setNum]: { ...prev.lineups[setNum], firstServe: team } } }) : prev)}
