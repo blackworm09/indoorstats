@@ -35,10 +35,15 @@ export const TONE_CLASS: Record<Tone, string> = {
   poor: 'bg-[#9F1239] text-white',
   rose: 'bg-[#F43F5E] text-[#0D0F12]',
   low: 'bg-[#FDA4AF] text-[#0D0F12]',
-  neu: 'bg-[#262B33] text-[#F5F7FA] border-[1.5px] border-[#3A404A]',
+  neu: 'bg-[#262B33] text-[#F5F7FA]',
   good: 'bg-[#6EE7B7] text-[#0D0F12]',
   mid: 'bg-[#10B981] text-[#0D0F12]',
   top: 'bg-[#047857] text-white',
+};
+// Only tappable buttons get a border (lighter shade of the fill).
+export const TONE_BORDER: Record<Tone, string> = {
+  poor: 'border-2 border-[#C81E4E]', rose: 'border-2 border-[#FB7185]', low: 'border-2 border-[#FECDD3]',
+  neu: 'border-2 border-[#4A515C]', good: 'border-2 border-[#A7F3D0]', mid: 'border-2 border-[#34D399]', top: 'border-2 border-[#10B981]',
 };
 
 interface ScaleItem<C extends RatingCode> { code: C; sym: string; label: string; tone: Tone; info: string }
@@ -130,7 +135,6 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
 
   // Selection belongs to one step: a new step starts clean in the same render (no leftover highlight)
   const [pick, setPick] = useState<{ key: string; id: string | null }>({ key: '', id: null });
-  const [showSubs, setShowSubs] = useState(false);
   const [quickFor, setQuickFor] = useState<string | null>(null);
 
   const serverSuggestion = rally?.step === 'our_serve' ? court.display[0] : null;
@@ -283,7 +287,7 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
             <span className="flex items-center gap-1.5 whitespace-nowrap"><Undo2 className="w-4 h-4 shrink-0" /> {t('Last rally')}</span>
             {lastEntry && <span className="text-[10px] font-semibold tracking-[0.04em] text-mute truncate max-w-full normal-case">{lastEntry.kind === 'point' ? `${lastEntry.own}:${lastEntry.opponent} · ` : ''}{lastEntry.text}</span>}
           </button>
-          <button onClick={() => setShowSubs(true)} disabled={rallyRunning} className={`disabled:opacity-30 h-12 rounded-lg border font-display font-bold tracking-[0.06em] uppercase text-[13px] flex items-center justify-center gap-1 whitespace-nowrap px-1 ${used >= gameState.subLimit ? 'border-bad text-bad' : 'border-line'}`}><ArrowLeftRight className="w-4 h-4 shrink-0 hidden xl:block" /> {t('Sub')} {used}/{gameState.subLimit}</button>
+          <div data-subs className={`h-12 flex items-center justify-center font-display font-bold tracking-[0.06em] uppercase text-[13px] whitespace-nowrap px-1 ${used >= gameState.subLimit ? 'text-bad' : 'text-mute'}`}>{t('Subs')} {used}/{gameState.subLimit}</div>
         </div>
       </section>
 
@@ -382,7 +386,6 @@ export default function RallyView({ gameState, setPending, commitRally, onSub, o
       </aside>
 
       <AnimatePresence>
-        {showSubs && <SubSheet players={gameState.players} courtIds={court.positions} legalFor={legalFor} onClose={() => setShowSubs(false)} onSub={onSub} used={used} limit={gameState.subLimit} />}
         {quickFor && (
           <QuickSheet key="quick" player={gameState.players.find(p => p.id === quickFor)!} pos={positionOf(court, quickFor)}
             label={nameOf(quickFor)} players={gameState.players} legal={legalFor(quickFor)} blocked={rallyRunning} canError={!!rally}
@@ -463,7 +466,7 @@ function Scale<C extends RatingCode>({ items, cols, disabled, onPick, compact }:
         return (
           <div key={it.code} className="relative">
             <button onClick={() => onPick(it.code)} disabled={disabled} data-code={it.code}
-              className={`w-full ${compact ? (cols === 3 ? 'h-20 lg:h-24' : 'h-24 lg:h-28') : cols === 3 ? 'h-28 lg:h-32' : 'h-28 lg:h-36'} rounded-xl flex flex-col items-center justify-center gap-1.5 transition-transform active:scale-95 disabled:opacity-30 ${TONE_CLASS[it.tone]}`}>
+              className={`w-full ${compact ? (cols === 3 ? 'h-20 lg:h-24' : 'h-24 lg:h-28') : cols === 3 ? 'h-28 lg:h-32' : 'h-28 lg:h-36'} rounded-xl flex flex-col items-center justify-center gap-1.5 transition-transform active:scale-95 disabled:opacity-30 ${TONE_CLASS[it.tone]} ${TONE_BORDER[it.tone]}`}>
               <span className={`font-display font-bold leading-[0.9] ${cols === 3 ? 'text-5xl' : 'text-[44px]'}`}>{it.sym}</span>
               <span className={`font-display font-bold uppercase text-center leading-tight px-1 ${cols === 3 ? 'text-[15px] tracking-[0.12em]' : 'text-[12px] lg:text-[13px] tracking-[0.02em]'}`}>{t(it.label)}</span>
             </button>
@@ -531,7 +534,12 @@ function QuickSheet({ player, pos, label, players, legal, blocked, canError, use
 }) {
   // Only legal subs are offered (see legalSubsIn)
   const bench = players.map((p, i) => ({ p, i })).filter(x => legal.includes(x.p.id));
-  const sorted = [...bench.filter(x => x.p.role === player.role), ...bench.filter(x => x.p.role !== player.role)];
+  // Suggested first: same role; setter and opposite also suggest each other. Then by jersey number.
+  const pair: Partial<Record<string, string>> = { setter: 'opposite', opposite: 'setter' };
+  const suggested = (r: string) => r === player.role || r === pair[player.role];
+  const rank = (r: string) => (r === player.role ? 0 : suggested(r) ? 1 : 2);
+  const num = (x: { p: Player }) => parseInt(x.p.number, 10) || 999;
+  const sorted = [...bench].sort((a, b) => rank(a.p.role) - rank(b.p.role) || num(a) - num(b));
   const subsOpen = !blocked && used < limit;
   return (
     <Sheet onClose={onClose}>
@@ -544,7 +552,7 @@ function QuickSheet({ player, pos, label, players, legal, blocked, canError, use
       </div>
       <div className="relative">
         <button onClick={onError} disabled={!canError}
-          className={`w-full h-16 rounded-xl font-display text-lg font-bold tracking-[0.12em] uppercase disabled:opacity-30 ${TONE_CLASS.poor}`}>{t("Unforced error")}</button>
+          className={`w-full h-16 rounded-xl font-display text-lg font-bold tracking-[0.12em] uppercase disabled:opacity-30 ${TONE_CLASS.poor} ${TONE_BORDER.poor}`}>{t("Unforced error")}</button>
         <span className="absolute top-1/2 -translate-y-1/2 right-3.5 flex"><InfoDot light text={t("Net touch, foot fault, double contact. +1 them. Pass and attacks so far stay recorded.")} /></span>
       </div>
       {player.role === 'libero' && (
@@ -569,14 +577,14 @@ function QuickSheet({ player, pos, label, players, legal, blocked, canError, use
         <>
           <div className="flex justify-between items-center">
             <span className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">{t('Sub')} · {used}/{limit}{blocked ? ` · ${t('after the rally')}` : ''}</span>
-            <InfoDot light text={t("Only legal subs are shown. Same role first (orange).")} />
+            <InfoDot light text={t("Only legal subs are shown. Same role first (orange); setter and opposite also suggest each other.")} />
           </div>
           {!blocked && used >= limit && <p className="text-sm text-bad">{t("Sub limit reached.")}</p>}
           {!blocked && used < limit && sorted.length === 0 && <p className="text-sm text-mute">{t("No legal sub.")}</p>}
           <div className="grid grid-cols-2 gap-2">
             {sorted.map(({ p, i }) => (
               <button key={p.id} onClick={() => onSub(p.id)} disabled={!subsOpen}
-                className={`h-14 rounded-lg text-left px-3.5 flex flex-col justify-center disabled:opacity-30 ${p.role === player.role ? 'border-[1.5px] border-primary' : 'border border-line'}`}>
+                className={`h-14 rounded-lg text-left px-3.5 flex flex-col justify-center disabled:opacity-30 ${suggested(p.role) ? 'border-[1.5px] border-primary' : 'border border-line'}`}>
                 <span className="font-display text-lg font-bold uppercase leading-tight truncate">{p.name.trim() || playerLabel(p, i)}</span>
                 <span className="font-display text-[11px] font-semibold tracking-[0.1em] text-mute">{p.number.trim() ? `#${p.number.trim()} · ` : ''}{t(ROLE_SHORT[p.role])}</span>
               </button>
@@ -588,47 +596,3 @@ function QuickSheet({ player, pos, label, players, legal, blocked, canError, use
   );
 }
 
-function SubSheet({ players, courtIds, legalFor, onClose, onSub, used, limit }: {
-  players: Player[]; courtIds: (string | null)[]; legalFor: (outId: string) => string[]; onClose: () => void; onSub: (inId: string, outId: string) => void; used: number; limit: number;
-}) {
-  const [outId, setOutId] = useState<string | null>(null);
-  const indexed = players.map((p, i) => ({ p, i })).filter(x => x.p.role !== 'libero');
-  const court = courtIds.map((id, k) => ({ id, pos: k + 1 })).filter(x => x.id).map(x => ({ ...indexed.find(y => y.p.id === x.id)!, pos: x.pos })).filter(x => x.p);
-  const legal = outId ? legalFor(outId) : [];
-  const bench = indexed.filter(x => legal.includes(x.p.id));
-  const outRole = players.find(p => p.id === outId)?.role;
-  const btn = (p: Player, i: number, active: boolean, onClick: () => void, disabled = false, hint = false) => (
-    <button key={p.id} onClick={onClick} disabled={disabled}
-      className={`w-full text-left px-3 py-2.5 rounded-lg transition-all disabled:opacity-30 ${active ? 'border-[1.5px] border-primary bg-primary/10' : hint ? 'border-[1.5px] border-primary' : 'border border-line'}`}>
-      <span className="block font-display font-bold uppercase text-base truncate">{p.name.trim() || playerLabel(p, i)}</span>
-      <span className="block font-display text-[11px] font-semibold tracking-[0.1em] text-mute">{t(ROLE_LABEL[p.role])}</span>
-    </button>
-  );
-  return (
-    <Sheet onClose={onClose}>
-      <div className="flex justify-between items-center">
-        <div>
-          <h3 className="font-display text-2xl font-bold uppercase tracking-[0.04em]">{t("Sub")}</h3>
-          <p className="font-display text-xs font-semibold tracking-[0.12em] uppercase text-mute">{used}/{limit}</p>
-        </div>
-        <button onClick={onClose} aria-label="Close" className="w-10 h-10 rounded-lg border border-line flex items-center justify-center"><X className="w-5 h-5" /></button>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-2">
-          <div className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">{t("Out")}</div>
-          {court.map(({ p, i, pos }) => (
-            <div key={p.id} className="relative">
-              {btn(p, i, outId === p.id, () => setOutId(outId === p.id ? null : p.id), legalFor(p.id).length === 0)}
-              <span className="absolute top-2 right-2 font-display text-[11px] text-mute">P{pos}</span>
-            </div>
-          ))}
-        </div>
-        <div className="space-y-2">
-          <div className="font-display text-xs font-bold tracking-[0.14em] uppercase text-mute">{t("In")}</div>
-          {outId && bench.length === 0 && <div className="text-sm text-mute">{t("No legal sub")}</div>}
-          {bench.map(({ p, i }) => btn(p, i, false, () => { if (outId) { onSub(p.id, outId); setOutId(null); onClose(); } }, used >= limit, !!outRole && p.role === outRole))}
-        </div>
-      </div>
-    </Sheet>
-  );
-}

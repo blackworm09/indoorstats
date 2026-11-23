@@ -568,9 +568,24 @@ export default function App() {
         {showConfig && (
           <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/80">
             <motion.div initial={{ y: 60, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 60, opacity: 0 }} transition={{ duration: 0.15 }}
-              className="bg-surface border border-line p-5 sm:p-7 rounded-t-2xl sm:rounded-2xl w-full max-w-xl shadow-2xl space-y-5 max-h-[92dvh] overflow-y-auto">
-              <div className="flex justify-between items-center">
+              className="bg-surface border border-line p-5 sm:p-7 lg:p-6 rounded-t-2xl sm:rounded-2xl w-full max-w-xl lg:max-w-5xl shadow-2xl space-y-5 lg:space-y-3 max-h-[96dvh] overflow-y-auto">
+              <div className="flex flex-wrap justify-between items-center gap-x-5 gap-y-3">
                 <span className="font-display text-3xl font-bold uppercase tracking-[0.04em]">{t('Team')}</span>
+                {/* Team switcher */}
+                <div className="flex flex-wrap gap-2 items-center flex-1 min-w-0">
+                {teams.map(x => (
+                  <div key={x.id} className="relative">
+                    <button onClick={() => switchTeam(x.id)} disabled={x.id !== teamId && matchStarted}
+                      className={`h-10 pl-3.5 ${x.id !== teamId && !matchStarted ? 'pr-9' : 'pr-3.5'} rounded-lg font-display font-bold uppercase tracking-[0.06em] disabled:opacity-35 ${x.id === teamId ? 'border-[1.5px] border-primary text-primary' : 'border border-line'}`}>{x.name || t('Team')}</button>
+                    {x.id !== teamId && !matchStarted && (
+                      <button onClick={() => deleteTeam(x.id)} aria-label={t('Delete')} className="absolute right-1.5 top-2 w-6 h-6 rounded-md border border-line flex items-center justify-center text-mute hover:text-bad"><Trash2 className="w-3.5 h-3.5" /></button>
+                    )}
+                  </div>
+                ))}
+                <button onClick={addTeam} className="h-10 px-3 rounded-lg border border-dashed border-line font-display font-bold uppercase text-sm text-mute flex items-center gap-1"><Plus className="w-4 h-4" /> {t('Team')}</button>
+                {matchStarted && teams.length > 1 && <InfoDot light text={t('To switch team, start a new match first.')} />}
+              </div>
+
                 <div className="flex items-center gap-2">
                   <div className="flex rounded-lg border border-line overflow-hidden" role="group" aria-label="Language">
                     {(['de', 'en'] as Lang[]).map(l => (
@@ -582,21 +597,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Team switcher */}
-              <div className="flex flex-wrap gap-2 items-center">
-                {teams.map(x => (
-                  <div key={x.id} className="relative">
-                    <button onClick={() => switchTeam(x.id)} disabled={x.id !== teamId && matchStarted}
-                      className={`h-10 pl-3.5 ${x.id !== teamId && !matchStarted ? 'pr-8' : 'pr-3.5'} rounded-lg font-display font-bold uppercase tracking-[0.06em] disabled:opacity-35 ${x.id === teamId ? 'border-[1.5px] border-primary text-primary' : 'border border-line'}`}>{x.name || t('Team')}</button>
-                    {x.id !== teamId && !matchStarted && (
-                      <button onClick={() => deleteTeam(x.id)} aria-label={t('Delete')} className="absolute right-1.5 top-2.5 text-mute hover:text-bad"><Trash2 className="w-4 h-4" /></button>
-                    )}
-                  </div>
-                ))}
-                <button onClick={addTeam} className="h-10 px-3 rounded-lg border border-dashed border-line font-display font-bold uppercase text-sm text-mute flex items-center gap-1"><Plus className="w-4 h-4" /> {t('Team')}</button>
-                {matchStarted && teams.length > 1 && <InfoDot light text={t('To switch team, start a new match first.')} />}
-              </div>
-
               <div className="grid grid-cols-2 gap-2">
                 <input type="text" value={team.name} onChange={e => renameTeam(e.target.value)} placeholder={t('Team name')} aria-label={t('Team name')}
                   className="bg-card border border-line focus:border-primary h-11 px-3 rounded-lg outline-none font-display font-bold uppercase" />
@@ -605,7 +605,7 @@ export default function App() {
                   className="bg-card border border-line focus:border-secondary h-11 px-3 rounded-lg outline-none font-display font-bold uppercase" />
               </div>
 
-              <div className="space-y-2">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 lg:gap-y-1.5 lg:gap-x-6">
                 {gameState.players.map((p, idx) => (
                   <div key={p.id} className="flex gap-2 items-center">
                     <input type="text" inputMode="numeric" value={p.number} maxLength={3}
@@ -621,29 +621,29 @@ export default function App() {
                           className={`h-10 w-9 sm:w-10 font-display text-xs font-bold ${p.role === r ? 'bg-ink text-[#0B0C0E]' : 'text-mute'}`}>{t(ROLE_SHORT[r])}</button>
                       ))}
                     </div>
-                    <button onClick={() => removePlayer(p.id)} aria-label={t('Remove player')} className="p-1.5 text-mute hover:text-bad"><Trash2 className="w-4 h-4" /></button>
+                    <button onClick={() => removePlayer(p.id)} aria-label={t('Remove player')} className="w-10 h-10 shrink-0 rounded-lg border border-line flex items-center justify-center text-mute hover:text-bad"><Trash2 className="w-4 h-4" /></button>
                   </div>
                 ))}
                 <button onClick={addPlayer}
-                  className="w-full h-11 border border-dashed border-line rounded-lg font-display text-sm font-bold uppercase tracking-[0.1em] text-mute flex items-center justify-center gap-1.5">
+                  className="w-full h-10 border border-dashed border-line rounded-lg font-display text-sm font-bold uppercase tracking-[0.1em] text-mute flex items-center justify-center gap-1.5">
                   <Plus className="w-4 h-4" /> {t('Add player')}
                 </button>
               </div>
 
-              <div className="flex items-center justify-between border-t border-line pt-4">
+              <div className="flex flex-wrap items-center gap-3 border-t border-line pt-4">
                 <span className="font-display text-sm font-bold uppercase tracking-[0.12em] text-mute">{t('Subs per set')}</span>
                 <div className="flex items-center gap-2">
                   <button onClick={() => setGameState(prev => ({ ...prev, subLimit: Math.max(0, prev.subLimit - 1) }))} aria-label="−" className="w-9 h-9 border border-line rounded-lg flex items-center justify-center"><Minus className="w-4 h-4" /></button>
                   <span className="w-6 text-center font-display text-lg font-bold">{gameState.subLimit}</span>
                   <button onClick={() => setGameState(prev => ({ ...prev, subLimit: prev.subLimit + 1 }))} aria-label="+" className="w-9 h-9 border border-line rounded-lg flex items-center justify-center"><Plus className="w-4 h-4" /></button>
                 </div>
-              </div>
-
-              <div className="flex gap-2 pt-1">
-                <button onClick={newMatch}
-                  className="h-14 px-4 rounded-lg border border-line font-display font-bold uppercase text-sm tracking-[0.1em]">{t('New match')}</button>
-                <button onClick={() => setShowConfig(false)}
-                  className="flex-1 h-14 bg-primary text-[#0D0F12] rounded-lg font-display font-bold uppercase text-lg tracking-[0.12em]">{t('Done')}</button>
+              
+                <div className="flex gap-2 w-full lg:w-auto lg:ml-auto">
+                  <button onClick={newMatch}
+                    className="h-14 lg:h-12 px-4 rounded-lg border border-line font-display font-bold uppercase text-sm tracking-[0.1em]">{t('New match')}</button>
+                  <button onClick={() => setShowConfig(false)}
+                    className="flex-1 lg:flex-none lg:w-56 h-14 lg:h-12 bg-primary text-[#0D0F12] rounded-lg font-display font-bold uppercase text-lg tracking-[0.12em]">{t('Done')}</button>
+                </div>
               </div>
             </motion.div>
           </div>

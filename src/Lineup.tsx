@@ -122,7 +122,7 @@ export function LineupSheet({ players, setNum, initial, onSave, onClose }: Lineu
     const here = slot !== null && at === slot - 1;
     return (
       <button key={p.id} onClick={() => assign(p.id)}
-        className={`h-16 rounded-lg px-3.5 flex flex-col items-start justify-center transition-all active:scale-95 ${
+        className={`h-14 rounded-lg px-3.5 flex flex-col items-start justify-center transition-all active:scale-95 ${
           here ? 'border-[1.5px] border-primary bg-primary/10' : primary ? 'border-[1.5px] border-primary' : 'border border-line'
         } ${at >= 0 && !here ? 'opacity-35' : ''}`}>
         <span className="font-display text-lg font-bold uppercase leading-tight truncate max-w-full">{p.name.trim() || playerLabel(p, i)}</span>
@@ -168,7 +168,7 @@ export function LineupSheet({ players, setNum, initial, onSave, onClose }: Lineu
         className="flex-1 min-h-0 flex flex-col lg:flex-row overflow-y-auto lg:overflow-hidden">
 
         {/* COURT */}
-        <section className="lg:w-[46%] p-5 lg:p-7 flex flex-col gap-5 border-b lg:border-b-0 lg:border-r border-line">
+        <section className="lg:w-[46%] p-4 lg:p-7 flex flex-col gap-4 lg:gap-5 border-b lg:border-b-0 lg:border-r border-line">
           <div className="flex items-center justify-between">
             <span className="font-display text-3xl font-bold tracking-[0.06em] uppercase">{t('Set {n}', { n: setNum })}</span>
             <div className="flex items-center gap-3">
@@ -187,7 +187,7 @@ export function LineupSheet({ players, setNum, initial, onSave, onClose }: Lineu
                   const onClick = step === 1 ? () => setSlot(pos) : step === 2 && id && lineup.liberoId ? () => toggleReplace(id) : undefined;
                   return (
                     <button key={pos} onClick={onClick} disabled={!onClick} data-pos={pos}
-                      className={`h-24 rounded-lg flex flex-col items-center justify-center gap-0.5 px-1 transition-all ${
+                      className={`h-20 lg:h-24 rounded-lg flex flex-col items-center justify-center gap-0.5 px-1 transition-all ${
                         active ? 'border-2 border-primary' : lib ? 'border-[1.5px] border-primary' : id ? 'border border-line' : 'border border-dashed border-mute'
                       }`}>
                       <span className="font-display text-[11px] font-semibold tracking-[0.1em] text-mute">P{pos}</span>
@@ -212,18 +212,18 @@ export function LineupSheet({ players, setNum, initial, onSave, onClose }: Lineu
           )}
           {step === 1 && filled > 0 && (
             <button onClick={() => { setLineup({ ...lineup, positions: [null, null, null, null, null, null], liberoReplaces: [] }); setSlot(null); }}
-              className="self-start font-display text-xs font-bold tracking-[0.12em] uppercase text-mute underline">{t("Clear all")}</button>
+              className="self-start h-9 px-3 rounded-lg border border-line font-display text-xs font-bold tracking-[0.12em] uppercase text-mute">{t("Clear all")}</button>
           )}
         </section>
 
         {/* PANEL */}
-        <section className="flex-1 p-5 lg:p-7 flex flex-col gap-4 lg:overflow-y-auto">
+        <section className="flex-1 p-4 lg:p-6 flex flex-col gap-3 lg:overflow-y-auto">
           {step === 1 && slot !== null && (
             <>
               <div className="flex items-center justify-between">
                 <span className="font-display text-3xl font-bold tracking-[0.06em] uppercase">P{slot}</span>
                 {lineup.positions[slot - 1] && (
-                  <button onClick={clearSpot} className="font-display text-xs font-bold tracking-[0.12em] uppercase text-mute underline">{t('Clear')} P{slot}</button>
+                  <button onClick={clearSpot} className="h-9 px-3 rounded-lg border border-line font-display text-xs font-bold tracking-[0.12em] uppercase text-mute">{t('Clear')} P{slot}</button>
                 )}
               </div>
               {suggested.length > 0 && (
